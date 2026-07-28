@@ -9,5 +9,15 @@ wheels/
 # Virtual environments
 .venv
 
-# Test data (large sequence files)
-test/
+# Test data (large sequence files) — 保留测试代码，忽略数据文件
+test/*.fa
+test/*.fasta
+test/*.fna
+test/*.faa
+test/*.aa
+test/*.seq
+test/*.fq
+test/*.fastq
+test/*.gz
+test/*.codingseq
+test/__pycache__/
