@@ -16,6 +16,15 @@ app = typer.Typer()
 console = Console()
 
 
+def _check_file(file: str) -> Path:
+    """检查文件存在，不存在则友好报错退出。"""
+    p = Path(file)
+    if not p.exists():
+        console.print(f"[red]错误: 文件不存在: {file}[/red]")
+        raise typer.Exit(code=1)
+    return p
+
+
 def _launch_browser(paths: list[Path]):
     """根据路径启动浏览器：目录走文件选择器，文件直接打开。
 
@@ -73,6 +82,7 @@ def view(
     wrap: int = typer.Option(60, help="序列每行换行宽度"),
 ):
     """美化查看 FASTA 文件"""
+    _check_file(file)
     for header, seq in parse_fasta(file):
         seqtype = detect_seq_type(seq)
         type_label = "DNA" if seqtype == SeqType.DNA else "Protein" if seqtype == SeqType.PROTEIN else "Unknown"
@@ -100,6 +110,7 @@ def stats(
     file: str = typer.Argument(help="FASTA 文件路径")
 ):
     """统计 FASTA 文件特征"""
+    _check_file(file)
     lengths: list[int] = []
     total_gc = 0
     total_len = 0
@@ -140,6 +151,7 @@ def head(
     wrap: int = typer.Option(60, help="序列每行换行宽度"),
 ):
     """查看 FASTA 文件的前 N 条序列。"""
+    _check_file(file)
     count = 0
     for header, seq in parse_fasta(file):
         if count >= n:
@@ -175,6 +187,7 @@ def fqview(
     wrap: int = typer.Option(60, help="序列每行换行宽度"),
 ):
     """美化查看 FASTQ 文件（序列 + 质量值对齐着色）"""
+    _check_file(file)
     count = 0
     for header, seq, quality in parse_fastq(file):
         if n > 0 and count >= n:
