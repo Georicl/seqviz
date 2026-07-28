@@ -222,12 +222,16 @@ class SequenceView(Static):
             self._update_display()
 
     def scroll_content_up(self, n: int = 5):
-        self.view_offset = max(0, self.view_offset - n)
-        self._update_display()
+        new_offset = max(0, self.view_offset - n)
+        if new_offset != self.view_offset:
+            self.view_offset = new_offset
+            self._update_display()
 
     def scroll_content_down(self, n: int = 5):
-        self.view_offset = min(max(0, self._total_lines - 1), self.view_offset + n)
-        self._update_display()
+        new_offset = min(max(0, self._total_lines - 1), self.view_offset + n)
+        if new_offset != self.view_offset:
+            self.view_offset = new_offset
+            self._update_display()
 
 class HelpScreen(ModalScreen):
     """帮助面板：显示所有快捷键。"""

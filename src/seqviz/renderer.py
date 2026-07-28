@@ -34,17 +34,21 @@ def colorize_sequence(seq: str, seq_type: SeqType | None = None) -> Text:
     if seq_type is None:
         seq_type = detect_seq_type(seq=seq)
 
-    if seq_type == SeqType.PROTEIN:
-        # 默认使用DNA配色
-        color_map = PROTEIN_COLORS
-    else:
-        color_map = DNA_COLORS
-    
+    color_map = PROTEIN_COLORS if seq_type == SeqType.PROTEIN else DNA_COLORS
+
+    # 按颜色分段批量 append（减少 span 数量，提升渲染性能）
     text = Text()
-    for char in seq:
-        color = color_map.get(char.upper(), "white")
-        text.append(char, style=color)
-    
+    if not seq:
+        return text
+    prev_color = color_map.get(seq[0].upper(), "white")
+    start = 0
+    for i in range(1, len(seq)):
+        color = color_map.get(seq[i].upper(), "white")
+        if color != prev_color:
+            text.append(seq[start:i], style=prev_color)
+            prev_color = color
+            start = i
+    text.append(seq[start:], style=prev_color)
     return text
 
 def colorize_quality(quality: str) -> Text:
@@ -60,18 +64,29 @@ def colorize_quality(quality: str) -> Text:
     high = _QUALITY_THRESHOLDS.get("high", 30)
     medium = _QUALITY_THRESHOLDS.get("medium", 20)
     low = _QUALITY_THRESHOLDS.get("low", 10)
-    text = Text()
-    for char in quality:
-        score = ord(char) - 33
+
+    def _style(score: int) -> str:
         if score >= high:
-            style = "green"
-        elif score >= medium:
-            style = "yellow"
-        elif score >= low:
-            style = "bright_red"
-        else:
-            style = "red"
-        text.append(char, style=style)
+            return "green"
+        if score >= medium:
+            return "yellow"
+        if score >= low:
+            return "bright_red"
+        return "red"
+
+    # 按样式分段批量 append
+    text = Text()
+    if not quality:
+        return text
+    prev_style = _style(ord(quality[0]) - 33)
+    start = 0
+    for i in range(1, len(quality)):
+        style = _style(ord(quality[i]) - 33)
+        if style != prev_style:
+            text.append(quality[start:i], style=prev_style)
+            prev_style = style
+            start = i
+    text.append(quality[start:], style=prev_style)
     return text
 
 

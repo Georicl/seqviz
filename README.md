@@ -247,8 +247,9 @@ src/seqviz/
 
 - [x] v0.1.0 -- MVP: view / stats / head / fqview / browse
 - [x] v0.2.0 -- 目录文件选择器、多文件标签页、范围复制、默认命令
-- [ ] v0.3.0 -- VCF 可视化、序列筛选 (--min-len, --min-gc, --grep)
-- [ ] v0.4.0 -- 多格式支持 (GFF/BED)，格式互转
+- [x] v0.3.0 -- JSON 配置系统、渲染性能优化、更名为 seqviz
+- [ ] v0.4.0 -- VCF 可视化、序列筛选 (--min-len, --min-gc, --grep)
+- [ ] v0.5.0 -- 多格式支持 (GFF/BED)，格式互转
 - [ ] v1.0.0 -- PyPI 发布，完整测试覆盖，CI
 
 ---

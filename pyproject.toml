@@ -7,7 +7,7 @@ packages = ["src/seqviz"]
 
 [project]
 name = "seqviz"
-version = "0.2.0"
+version = "0.3.0"
 description = "A terminal visualizer for biological sequence data — FASTA / FASTQ / VCF"
 readme = "README.md"
 requires-python = ">=3.14"
