@@ -6,6 +6,7 @@ from fasta_fmt.stats import calc_sequence_stats
 from fasta_fmt.seq_type import SeqType, detect_seq_type
 from fasta_fmt.fastq import parse_fastq
 from fasta_fmt.browser import FastaBrowser
+from fasta_fmt.file_browser import run_file_browser, scan_directory, is_sequence_file
 from fasta_fmt.renderer import colorize_sequence, colorize_quality, quality_stats, quality_bar, position_ruler
 from rich.table import Table
 
@@ -180,10 +181,33 @@ def fqview(
 
 @app.command()
 def browse(
-    files: list[str] = typer.Argument(help="FASTA/FASTQ 文件路径（支持多个）"),
+    files: list[str] = typer.Argument(help="FASTA/FASTQ 文件或目录路径（目录会启动文件选择器）"),
 ):
-    """交互式浏览 FASTA/FASTQ 文件（支持多文件标签页）。"""
-    app = FastaBrowser([Path(f) for f in files])
+    """交互式浏览 FASTA/FASTQ 文件（支持多文件标签页、目录浏览）。"""
+    paths = [Path(f) for f in files]
+
+    # 单个目录 → 启动文件选择器
+    if len(paths) == 1 and paths[0].is_dir():
+        selected = run_file_browser(paths[0])
+        if not selected:
+            console.print("[dim]未选择任何文件[/dim]")
+            raise typer.Exit()
+        paths = selected
+    else:
+        # 混合输入：展开其中的目录为序列文件
+        expanded: list[Path] = []
+        for p in paths:
+            if p.is_dir():
+                expanded.extend(info.path for info in scan_directory(p))
+            else:
+                expanded.append(p)
+        paths = expanded
+
+    if not paths:
+        console.print("[red]没有找到可打开的序列文件[/red]")
+        raise typer.Exit()
+
+    app = FastaBrowser(paths)
     app.run()
 
 
