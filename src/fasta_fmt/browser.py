@@ -360,6 +360,7 @@ class FastaBrowser(App):
         Binding("colon", "goto_seq", "跳转", show=True, priority=True),
         Binding("e", "export_seq", "导出", show=True, priority=True),
         Binding("y", "copy_seq", "复制", show=True, priority=True),
+        Binding("c", "copy_range", "范围复制", show=True, priority=True),
         Binding("question_mark", "help", "帮助", show=True, priority=True),
         Binding("q", "quit", "退出", show=True, priority=True),
         Binding("ctrl+c", "quit", "退出", show=False, priority=True),
@@ -584,6 +585,15 @@ class FastaBrowser(App):
         bar.add_class("visible")
         bar.focus()
 
+    def action_copy_range(self):
+        self._command_mode = "range"
+        bar = self.query_one("#command-bar", CommandBar)
+        bar.mode = "range"
+        bar.placeholder = "输入位置范围 (如 100-200)... (Enter 复制, Esc 取消)"
+        bar.value = ""
+        bar.add_class("visible")
+        bar.focus()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """命令栏回车确认。"""
         bar = self.query_one("#command-bar", CommandBar)
@@ -617,6 +627,9 @@ class FastaBrowser(App):
             except ValueError:
                 self.notify("请输入有效数字", title="Goto", severity="error")
 
+        elif self._command_mode == "range":
+            self._handle_range_copy(value)
+
     def on_input_changed(self, event: Input.Changed) -> None:
         """Esc 取消由 key handler 处理。"""
         pass
@@ -639,6 +652,52 @@ class FastaBrowser(App):
             event.stop()
 
     # ── 导出 & 复制 ──
+    def _copy_to_clipboard(self, text: str) -> bool:
+        """复制文本到系统剪贴板，成功返回 True。"""
+        import platform
+        system = platform.system()
+        try:
+            if system == "Darwin":  # macOS
+                subprocess.run(["pbcopy"], input=text.encode(), check=True)
+            elif system == "Linux":
+                subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), check=True)
+            else:  # Windows
+                subprocess.run(["clip"], input=text.encode(), check=True)
+            return True
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            return False
+
+    def _handle_range_copy(self, value: str):
+        """解析位置范围并复制对应序列片段。"""
+        main_view = self._get_main_view()
+        seq = main_view._seq
+        if not seq:
+            self.notify("当前没有序列", title="范围复制", severity="warning")
+            return
+
+        # 支持 "start-end" 或 "start..end" 或单个 "pos"
+        value = value.replace("..", "-").strip()
+        try:
+            if "-" in value:
+                start_s, end_s = value.split("-", 1)
+                start, end = int(start_s), int(end_s)
+            else:
+                start = end = int(value)
+        except ValueError:
+            self.notify("格式应为: 100-200", title="范围复制", severity="error")
+            return
+
+        # 边界检查 (1-based, 含两端)
+        if start < 1 or end > len(seq) or start > end:
+            self.notify(f"范围超出序列长度 (1-{len(seq)})", title="范围复制", severity="warning")
+            return
+
+        fragment = seq[start - 1:end]
+        if self._copy_to_clipboard(fragment):
+            self.notify(f"已复制 {start}-{end} ({len(fragment)} bp) 到剪贴板", title="范围复制")
+        else:
+            self.notify("剪贴板不可用", title="范围复制", severity="warning")
+
     def _build_seq_text(self) -> str:
         """构建当前序列的纯文本（FASTA/FASTQ 格式）。"""
         tab = self.current_tab
@@ -668,18 +727,10 @@ class FastaBrowser(App):
 
     def action_copy_seq(self):
         """复制当前序列到系统剪贴板。"""
-        import platform
         text = self._build_seq_text()
-        system = platform.system()
-        try:
-            if system == "Darwin":  # macOS
-                subprocess.run(["pbcopy"], input=text.encode(), check=True)
-            elif system == "Linux":
-                subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), check=True)
-            else:  # Windows
-                subprocess.run(["clip"], input=text.encode(), check=True)
+        if self._copy_to_clipboard(text):
             self.notify(f"已复制 {len(text)} 字符到剪贴板", title="复制")
-        except (FileNotFoundError, subprocess.CalledProcessError):
+        else:
             self.notify("剪贴板不可用，请用 e 导出到文件", title="复制", severity="warning")
 
     # ── 帮助 ──

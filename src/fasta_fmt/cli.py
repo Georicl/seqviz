@@ -14,6 +14,42 @@ app = typer.Typer()
 console = Console()
 
 
+def _launch_browser(paths: list[Path]):
+    """根据路径启动浏览器：目录走文件选择器，文件直接打开。"""
+    # 单个目录 → 启动文件选择器
+    if len(paths) == 1 and paths[0].is_dir():
+        selected = run_file_browser(paths[0])
+        if not selected:
+            console.print("[dim]未选择任何文件[/dim]")
+            raise typer.Exit()
+        paths = selected
+    else:
+        # 混合输入：展开其中的目录为序列文件
+        expanded: list[Path] = []
+        for p in paths:
+            if p.is_dir():
+                expanded.extend(info.path for info in scan_directory(p))
+            else:
+                expanded.append(p)
+        paths = expanded
+
+    if not paths:
+        console.print("[red]没有找到可打开的序列文件[/red]")
+        raise typer.Exit()
+
+    FastaBrowser(paths).run()
+
+
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context):
+    """fasta-fmt — 生物序列终端美化工具。
+
+    不带任何命令时，默认打开当前目录的文件浏览器。
+    """
+    if ctx.invoked_subcommand is None:
+        _launch_browser([Path(".")])
+
+
 @app.command()
 def view(
     file: str = typer.Argument(help="FASTA 文件路径"),
@@ -184,31 +220,7 @@ def browse(
     files: list[str] = typer.Argument(help="FASTA/FASTQ 文件或目录路径（目录会启动文件选择器）"),
 ):
     """交互式浏览 FASTA/FASTQ 文件（支持多文件标签页、目录浏览）。"""
-    paths = [Path(f) for f in files]
-
-    # 单个目录 → 启动文件选择器
-    if len(paths) == 1 and paths[0].is_dir():
-        selected = run_file_browser(paths[0])
-        if not selected:
-            console.print("[dim]未选择任何文件[/dim]")
-            raise typer.Exit()
-        paths = selected
-    else:
-        # 混合输入：展开其中的目录为序列文件
-        expanded: list[Path] = []
-        for p in paths:
-            if p.is_dir():
-                expanded.extend(info.path for info in scan_directory(p))
-            else:
-                expanded.append(p)
-        paths = expanded
-
-    if not paths:
-        console.print("[red]没有找到可打开的序列文件[/red]")
-        raise typer.Exit()
-
-    app = FastaBrowser(paths)
-    app.run()
+    _launch_browser([Path(f) for f in files])
 
 
 def _calc_n50(sorted_lengths: list[int], total_len: int) -> int:
