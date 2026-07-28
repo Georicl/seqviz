@@ -8,6 +8,7 @@ from seqviz.fastq import parse_fastq
 from seqviz.browser import FastaBrowser
 from seqviz.file_browser import run_file_browser, scan_directory, is_sequence_file
 from seqviz import config as config_mod
+from seqviz import theme as theme_mod
 from seqviz.renderer import colorize_sequence, colorize_quality, quality_stats, quality_bar, position_ruler
 from rich.table import Table
 
@@ -16,14 +17,15 @@ console = Console()
 
 
 def _launch_browser(paths: list[Path]):
-    """根据路径启动浏览器：目录走文件选择器，文件直接打开。"""
-    # 单个目录 → 启动文件选择器
+    """根据路径启动浏览器：目录走文件选择器，文件直接打开。
+
+    支持从序列浏览器按 B 返回文件选择器（循环）。
+    """
+    source_dir: Path | None = None
+
+    # 单个目录 → 记住来源目录，走文件选择器流程
     if len(paths) == 1 and paths[0].is_dir():
-        selected = run_file_browser(paths[0])
-        if not selected:
-            console.print("[dim]未选择任何文件[/dim]")
-            raise typer.Exit()
-        paths = selected
+        source_dir = paths[0]
     else:
         # 混合输入：展开其中的目录为序列文件
         expanded: list[Path] = []
@@ -34,11 +36,25 @@ def _launch_browser(paths: list[Path]):
                 expanded.append(p)
         paths = expanded
 
-    if not paths:
-        console.print("[red]没有找到可打开的序列文件[/red]")
-        raise typer.Exit()
+    while True:
+        # 有来源目录 → 先走文件选择器
+        if source_dir is not None:
+            selected = run_file_browser(source_dir)
+            if not selected:
+                console.print("[dim]未选择任何文件[/dim]")
+                raise typer.Exit()
+            open_paths = selected
+        else:
+            open_paths = paths
 
-    FastaBrowser(paths).run()
+        if not open_paths:
+            console.print("[red]没有找到可打开的序列文件[/red]")
+            raise typer.Exit()
+
+        # 运行序列浏览器；按 B 返回 "back" 则重新进入文件选择器
+        result = FastaBrowser(open_paths, source_dir=source_dir).run()
+        if result != "back":
+            break
 
 
 @app.callback(invoke_without_command=True)
@@ -226,21 +242,28 @@ def browse(
 
 @app.command()
 def config(
-    init: bool = typer.Option(False, "--init", help="生成默认配置文件模板"),
+    init: bool = typer.Option(False, "--init", help="生成默认配置文件模板 (config.json + theme.json)"),
 ):
-    """查看当前生效的配置（--init 生成配置文件模板）。"""
+    """查看当前生效的配置与主题（--init 生成配置文件模板）。"""
     import json
 
     if init:
-        cfg_path = config_mod.CONFIG_FILE
-        if cfg_path.exists():
-            console.print(f"[yellow]配置文件已存在: {cfg_path}[/yellow]")
-            raise typer.Exit()
-        cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cfg_path, "w") as f:
-            json.dump(config_mod.DEFAULT_CONFIG, f, indent=2, ensure_ascii=False)
-        console.print(f"[green]已生成默认配置: {cfg_path}[/green]")
-        console.print("[dim]编辑该文件即可自定义浏览器行为、配色和文件后缀。[/dim]")
+        config_mod.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        # 生成 config.json
+        if config_mod.CONFIG_FILE.exists():
+            console.print(f"[yellow]配置文件已存在: {config_mod.CONFIG_FILE}[/yellow]")
+        else:
+            with open(config_mod.CONFIG_FILE, "w") as f:
+                json.dump(config_mod.DEFAULT_CONFIG, f, indent=2, ensure_ascii=False)
+            console.print(f"[green]已生成默认配置: {config_mod.CONFIG_FILE}[/green]")
+        # 生成 theme.json
+        if theme_mod.THEME_FILE.exists():
+            console.print(f"[yellow]主题文件已存在: {theme_mod.THEME_FILE}[/yellow]")
+        else:
+            with open(theme_mod.THEME_FILE, "w") as f:
+                json.dump(theme_mod.DEFAULT_THEME, f, indent=2, ensure_ascii=False)
+            console.print(f"[green]已生成默认主题: {theme_mod.THEME_FILE}[/green]")
+        console.print("[dim]编辑 config.json 自定义行为/序列配色/后缀；编辑 theme.json 自定义界面主题。[/dim]")
         raise typer.Exit()
 
     # 显示配置文件路径与生效配置
@@ -250,6 +273,14 @@ def config(
                   f"[green](已加载)[/green]" if exists else f"[dim]配置文件:[/dim] {cfg_path} [yellow](不存在，使用默认值)[/yellow]")
     console.print()
     console.print_json(json.dumps(config_mod.get_config(), ensure_ascii=False))
+    console.print()
+    # 显示主题
+    th_path = theme_mod.THEME_FILE
+    th_exists = th_path.exists()
+    console.print(f"[dim]主题文件:[/dim] {th_path} "
+                  f"[green](已加载)[/green]" if th_exists else f"[dim]主题文件:[/dim] {th_path} [yellow](不存在，使用默认值)[/yellow]")
+    console.print()
+    console.print_json(json.dumps(theme_mod.get_theme(), ensure_ascii=False))
 
 
 def _calc_n50(sorted_lengths: list[int], total_len: int) -> int:

@@ -15,6 +15,7 @@ from rich.table import Table as RichTable
 from seqviz.seq_type import SeqType, detect_seq_type
 from seqviz.renderer import colorize_sequence, colorize_quality, quality_stats, quality_bar, DNA_COLORS, PROTEIN_COLORS
 from seqviz import config
+from seqviz.theme import get_theme, build_browser_css
 
 
 class FileFormat(Enum):
@@ -318,51 +319,11 @@ class FileTab:
 class FastaBrowser(App):
     """FASTA/FASTQ 文件交互式浏览器（支持多文件标签页）"""
 
-    TITLE = "seqviz browser"
+    TITLE = "Seqviz"
     SUB_TITLE = "生物序列终端浏览器"
+    DARK = False  # 浅色主题（白底黑字）
 
-    CSS = """
-    Screen {
-        background: $surface;
-    }
-    Horizontal {
-        height: 1fr;
-    }
-    #body {
-        height: 1fr;
-    }
-    .sidebar {
-        width: 45;
-        border-right: thick $accent;
-        background: $surface;
-    }
-    .sidebar:focus {
-        border-right: thick $primary;
-    }
-    .main-view {
-        width: 1fr;
-        height: 1fr;
-        padding: 0 1;
-        background: $surface;
-    }
-    #statusbar {
-        dock: bottom;
-        height: 1;
-        background: $primary-background;
-        color: $text;
-        padding: 0 1;
-    }
-    # 命令栏：按需动态挂载，默认不占布局
-    #command-bar {
-        height: 1;
-        margin: 0 1;
-        border: none;
-        background: $boost;
-    }
-    TabbedContent {
-        height: 1fr;
-    }
-    """
+    CSS = build_browser_css(get_theme())
 
     BINDINGS = [
         Binding("j", "scroll_down", "下移", show=True, priority=True),
@@ -378,17 +339,19 @@ class FastaBrowser(App):
         Binding("e", "export_seq", "导出", show=True, priority=True),
         Binding("y", "copy_seq", "复制", show=True, priority=True),
         Binding("c", "copy_range", "范围复制", show=True, priority=True),
+        Binding("B", "back", "返回选择", show=True, priority=True),
         Binding("question_mark", "help", "帮助", show=True, priority=True),
         Binding("q", "quit", "退出", show=True, priority=True),
         Binding("ctrl+c", "quit", "退出", show=False, priority=True),
         Binding("ctrl+q", "quit", "退出", show=False, priority=True),
     ]
 
-    def __init__(self, filepaths: list[Path]):
+    def __init__(self, filepaths: list[Path], source_dir: Path | None = None):
         super().__init__()
         self.file_tabs: list[FileTab] = []
         self.active_tab = 0
         self._command_mode: str = ""  # "search" or "goto"
+        self.source_dir = source_dir  # 来源目录（非 None 时 B 键可返回文件选择器）
 
         # 扫描所有文件
         for fp in filepaths:
@@ -762,6 +725,15 @@ class FastaBrowser(App):
             self.notify(f"已复制 {len(text)} 字符到剪贴板", title="复制")
         else:
             self.notify("剪贴板不可用，请用 e 导出到文件", title="复制", severity="warning")
+
+    # ── 返回文件选择器 ──
+    def action_back(self):
+        """B 键：返回文件选择器（仅当从目录打开时可用）。"""
+        if self.source_dir is None:
+            self.notify("当前不是从目录打开，无法返回文件选择", title="返回", severity="warning")
+            return
+        # 以 "back" 结果退出，由 CLI 循环重新启动文件选择器
+        self.exit(result="back")
 
     # ── 帮助 ──
     def action_help(self):

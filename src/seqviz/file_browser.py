@@ -13,6 +13,7 @@ from rich.text import Text
 
 from seqviz.browser import FileFormat
 from seqviz import config
+from seqviz.theme import get_theme, build_file_browser_css
 
 
 # 支持的序列文件后缀（从配置加载，可被用户 JSON 覆盖）
@@ -147,25 +148,11 @@ class FileBrowser(App):
     返回值: 选中的文件路径列表 (list[Path])，取消则返回空列表。
     """
 
-    TITLE = "seqviz file browser"
+    TITLE = "Seqviz"
     SUB_TITLE = "序列文件选择器"
+    DARK = False  # 浅色主题（白底黑字）
 
-    CSS = """
-    Screen {
-        background: $surface;
-    }
-    Horizontal {
-        height: 1fr;
-    }
-    #file-list {
-        width: 1fr;
-        border-right: thick $accent;
-    }
-    #preview {
-        width: 50;
-        padding: 0 1;
-    }
-    """
+    CSS = build_file_browser_css(get_theme())
 
     BINDINGS = [
         Binding("j", "cursor_down", "下移", show=True, priority=True),
