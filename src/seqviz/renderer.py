@@ -1,5 +1,5 @@
 from rich.text import Text
-from fasta_fmt.seq_type import SeqType, detect_seq_type
+from seqviz.seq_type import SeqType, detect_seq_type
 # DNA 碱基配色方案
 DNA_COLORS = {
     "A": "green",

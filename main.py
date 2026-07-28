@@ -1,5 +1,5 @@
 def main():
-    print("Hello from fasta-fmt!")
+    print("Hello from seqviz!")
 
 
 if __name__ == "__main__":

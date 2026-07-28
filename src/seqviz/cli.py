@@ -1,13 +1,13 @@
 import typer
 from pathlib import Path
 from rich.console import Console
-from fasta_fmt.parsers import parse_fasta
-from fasta_fmt.stats import calc_sequence_stats
-from fasta_fmt.seq_type import SeqType, detect_seq_type
-from fasta_fmt.fastq import parse_fastq
-from fasta_fmt.browser import FastaBrowser
-from fasta_fmt.file_browser import run_file_browser, scan_directory, is_sequence_file
-from fasta_fmt.renderer import colorize_sequence, colorize_quality, quality_stats, quality_bar, position_ruler
+from seqviz.parsers import parse_fasta
+from seqviz.stats import calc_sequence_stats
+from seqviz.seq_type import SeqType, detect_seq_type
+from seqviz.fastq import parse_fastq
+from seqviz.browser import FastaBrowser
+from seqviz.file_browser import run_file_browser, scan_directory, is_sequence_file
+from seqviz.renderer import colorize_sequence, colorize_quality, quality_stats, quality_bar, position_ruler
 from rich.table import Table
 
 app = typer.Typer()
@@ -42,7 +42,7 @@ def _launch_browser(paths: list[Path]):
 
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context):
-    """fasta-fmt — 生物序列终端美化工具。
+    """seqviz — 生物序列数据终端可视化工具。
 
     不带任何命令时，默认打开当前目录的文件浏览器。
     """

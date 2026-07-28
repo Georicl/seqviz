@@ -11,7 +11,7 @@ from textual.widgets.option_list import Option
 from textual.containers import Horizontal
 from rich.text import Text
 
-from fasta_fmt.browser import FileFormat
+from seqviz.browser import FileFormat
 
 
 # 支持的序列文件后缀
@@ -149,7 +149,7 @@ class FileBrowser(App):
     返回值: 选中的文件路径列表 (list[Path])，取消则返回空列表。
     """
 
-    TITLE = "fasta-fmt file browser"
+    TITLE = "seqviz file browser"
     SUB_TITLE = "序列文件选择器"
 
     CSS = """

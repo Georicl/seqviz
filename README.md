@@ -1,8 +1,10 @@
-# fasta-fmt
+# seqviz
 
-**生物序列终端美化工具 -- 做序列界的 `bat`**
+**生物序列数据终端可视化工具 -- 做序列界的 `bat`**
 
-在终端中彩色查看 FASTA/FASTQ 文件，支持 DNA 碱基着色、蛋白质氨基酸着色、质量值梯度显示、统计摘要、交互式 TUI 浏览器。
+在终端中彩色查看 FASTA/FASTQ 文件，支持 DNA 碱基着色、蛋白质氨基酸着色、质量值梯度显示、统计摘要、交互式 TUI 浏览器、目录文件选择器。
+
+> 原名 `fasta-fmt`，现已更名为 `seqviz`，以涵盖更广的序列数据可视化场景（VCF 支持规划中）。
 
 ---
 
@@ -12,7 +14,8 @@
 - **序列类型自动检测** -- 自动识别 DNA / 蛋白质序列，切换对应配色方案
 - **FASTQ 支持** -- 质量值 Phred 梯度着色，质量分布条，序列与质量值对齐显示
 - **统计摘要** -- 序列条数、总长度、N50、GC 含量，Rich 表格输出
-- **交互式浏览器** -- 基于 Textual 的 TUI，支持搜索、跳转、复制、导出、多文件标签页
+- **交互式浏览器** -- 基于 Textual 的 TUI，支持搜索、跳转、复制、范围选择、导出、多文件标签页
+- **目录文件选择器** -- 传入目录自动扫描序列文件，支持预览与多选批量打开
 - **gzip 支持** -- 直接读取 `.gz` 压缩文件
 - **管道友好** -- 非 TTY 环境自动关闭颜色输出
 - **流式解析** -- 生成器逐条读取，GB 级文件不占满内存
@@ -23,8 +26,8 @@
 
 ```bash
 # 从源码安装 (需要 uv)
-git clone https://github.com/Georicl/fasta-fmt.git
-cd fasta-fmt
+git clone https://github.com/Georicl/seqviz.git
+cd seqviz
 uv sync
 uv tool install .
 
@@ -37,23 +40,29 @@ uv pip install -e .
 ## 快速开始
 
 ```bash
+# 直接打开当前目录的文件浏览器 (默认行为)
+seqviz
+
+# 打开指定目录 (文件选择器)
+seqviz browse ./sequences/
+
 # 彩色查看 FASTA 文件
-fasta-fmt view genome.fasta
+seqviz view genome.fasta
 
 # 查看前 5 条序列
-fasta-fmt head genome.fasta -n 5
+seqviz head genome.fasta -n 5
 
 # 统计摘要
-fasta-fmt stats genome.fasta
+seqviz stats genome.fasta
 
 # 查看 FASTQ 文件 (序列 + 质量值着色)
-fasta-fmt fqview reads.fastq
+seqviz fqview reads.fastq
 
 # 交互式浏览 (TUI)
-fasta-fmt browse genome.fasta
+seqviz browse genome.fasta
 
 # 多文件标签页浏览
-fasta-fmt browse genome.fasta proteins.faa reads.fastq
+seqviz browse genome.fasta proteins.faa reads.fastq
 ```
 
 ---
@@ -62,18 +71,19 @@ fasta-fmt browse genome.fasta proteins.faa reads.fastq
 
 | 命令 | 说明 |
 |------|------|
+| `seqviz` | 默认打开当前目录的文件浏览器 |
 | `view <file>` | 美化查看 FASTA 文件 (碱基/氨基酸着色 + 位置标尺) |
 | `head <file> [-n N]` | 查看前 N 条序列 |
 | `stats <file>` | 统计摘要 (条数、长度、N50、GC%) |
 | `fqview <file> [-n N]` | 美化查看 FASTQ 文件 (序列 + 质量值对齐着色) |
-| `browse <file> [file2 ...]` | 交互式 TUI 浏览器 (支持多文件标签页) |
+| `browse <path> [...]` | 交互式 TUI 浏览器 (目录 → 文件选择器，文件 → 多标签页) |
 
 ---
 
 ## 交互式浏览器
 
 ```bash
-fasta-fmt browse genome.fasta
+seqviz browse genome.fasta
 ```
 
 左右双栏布局：左侧序列列表 (虚拟化，支持十万级序列)，右侧序列详情 (按需渲染)。
@@ -89,10 +99,23 @@ fasta-fmt browse genome.fasta
 | `/` | 搜索序列名称 (模糊匹配，循环搜索) |
 | `:` | 跳转到第 N 条序列 |
 | `y` | 复制当前序列到系统剪贴板 |
+| `c` | 范围复制 (输入位置如 `100-200`) |
 | `e` | 导出当前序列到文件 |
 | `?` | 显示帮助面板 |
 | `Tab` | 切换文件标签页 (多文件模式) |
 | `q` | 退出 |
+
+### 文件选择器
+
+传入目录时启动，自动扫描 `.fa .fasta .fna .faa .aa .seq .fq .fastq` 及对应 `.gz` 文件。
+
+| 按键 | 功能 |
+|------|------|
+| `j` / `k` | 上下移动 |
+| `Space` | 切换多选 |
+| `a` | 全选 / 取消全选 |
+| `Enter` | 打开 (有多选则批量打开) |
+| `q` | 取消 |
 
 ### 性能设计
 
@@ -139,20 +162,20 @@ Quality (Phred):
 
 ```bash
 # 克隆项目
-git clone https://github.com/Georicl/fasta-fmt.git
-cd fasta-fmt
+git clone https://github.com/Georicl/seqviz.git
+cd seqviz
 
 # 安装依赖
 uv sync
 
 # 运行
-uv run fasta-fmt view test/test.fa
+uv run seqviz view test/test.fa
 
 # 测试
 uv run pytest
 
 # Shell 补全 (zsh)
-fasta-fmt --install-completion zsh
+seqviz --install-completion zsh
 ```
 
 ---
@@ -160,7 +183,7 @@ fasta-fmt --install-completion zsh
 ## 项目结构
 
 ```
-src/fasta_fmt/
+src/seqviz/
   __init__.py
   cli.py            # CLI 入口 (Typer)
   parsers.py        # FASTA 流式解析器
@@ -169,6 +192,7 @@ src/fasta_fmt/
   seq_type.py       # 序列类型自动检测
   stats.py          # 统计计算 (N50, GC%)
   browser.py        # TUI 交互式浏览器 (Textual)
+  file_browser.py   # 目录文件选择器
 ```
 
 ---
@@ -176,8 +200,9 @@ src/fasta_fmt/
 ## Roadmap
 
 - [x] v0.1.0 -- MVP: view / stats / head / fqview / browse
-- [ ] v0.2.0 -- 序列筛选 (--min-len, --min-gc, --grep, --regex)
-- [ ] v0.3.0 -- 多格式支持 (GFF/BED)，格式互转
+- [x] v0.2.0 -- 目录文件选择器、多文件标签页、范围复制、默认命令
+- [ ] v0.3.0 -- VCF 可视化、序列筛选 (--min-len, --min-gc, --grep)
+- [ ] v0.4.0 -- 多格式支持 (GFF/BED)，格式互转
 - [ ] v1.0.0 -- PyPI 发布，完整测试覆盖，CI
 
 ---

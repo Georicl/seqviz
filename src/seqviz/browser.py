@@ -12,8 +12,8 @@ from rich.text import Text
 from rich.panel import Panel
 from rich.table import Table as RichTable
 
-from fasta_fmt.seq_type import SeqType, detect_seq_type
-from fasta_fmt.renderer import colorize_sequence, colorize_quality, quality_stats, quality_bar, DNA_COLORS, PROTEIN_COLORS
+from seqviz.seq_type import SeqType, detect_seq_type
+from seqviz.renderer import colorize_sequence, colorize_quality, quality_stats, quality_bar, DNA_COLORS, PROTEIN_COLORS
 
 
 class FileFormat(Enum):
@@ -206,6 +206,11 @@ class SequenceView(Static):
             content.append("\n")
         self.update(content)
 
+    def on_resize(self, event) -> None:
+        """组件尺寸变化时重新渲染（确保填满屏幕、适应终端缩放）。"""
+        if self._seq or self._header_lines:
+            self._update_display()
+
     def scroll_content_up(self, n: int = 5):
         self.view_offset = max(0, self.view_offset - n)
         self._update_display()
@@ -235,7 +240,7 @@ class HelpScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         help_text = Text()
-        help_text.append("\n  fasta-fmt browser 快捷键\n\n", style="bold cyan")
+        help_text.append("\n  seqviz browser 快捷键\n\n", style="bold cyan")
 
         keys = [
             ("j / k", "上下滚动"),
@@ -303,7 +308,7 @@ class FileTab:
 class FastaBrowser(App):
     """FASTA/FASTQ 文件交互式浏览器（支持多文件标签页）"""
 
-    TITLE = "fasta-fmt browser"
+    TITLE = "seqviz browser"
     SUB_TITLE = "生物序列终端浏览器"
 
     CSS = """
@@ -323,6 +328,7 @@ class FastaBrowser(App):
     }
     .main-view {
         width: 1fr;
+        height: 1fr;
         padding: 0 1;
         background: $surface;
     }
