@@ -277,15 +277,11 @@ class HelpScreen(ModalScreen):
 
 
 class CommandBar(Input):
-    """搜索/跳转命令栏。"""
+    """搜索/跳转/范围复制命令栏（按需动态挂载）。"""
 
     def __init__(self, mode: str = "search", **kwargs):
         super().__init__(**kwargs)
-        self.mode = mode  # "search" or "goto"
-        if mode == "search":
-            self.placeholder = "输入关键词搜索序列名称... (Enter 确认, Esc 取消)"
-        else:
-            self.placeholder = "输入序列编号 (如 42)... (Enter 确认, Esc 取消)"
+        self.mode = mode
 
 
 class StatusBar(Static):
@@ -332,6 +328,9 @@ class FastaBrowser(App):
     Horizontal {
         height: 1fr;
     }
+    #body {
+        height: 1fr;
+    }
     .sidebar {
         width: 45;
         border-right: thick $accent;
@@ -353,14 +352,12 @@ class FastaBrowser(App):
         color: $text;
         padding: 0 1;
     }
+    # 命令栏：按需动态挂载，默认不占布局
     #command-bar {
-        dock: top;
         height: 1;
         margin: 0 1;
-        display: none;
-    }
-    #command-bar.visible {
-        display: block;
+        border: none;
+        background: $boost;
     }
     TabbedContent {
         height: 1fr;
@@ -464,24 +461,23 @@ class FastaBrowser(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield CommandBar(id="command-bar")
-
-        if len(self.file_tabs) == 1:
-            # 单文件：不用标签页
-            tab = self.file_tabs[0]
-            yield Horizontal(
-                SequenceList(tab.sequences, id="sidebar-0", classes="sidebar"),
-                SequenceView(tab.filepath, file_format=tab.file_format, id="main-0", classes="main-view"),
-            )
-        else:
-            # 多文件：标签页
-            with TabbedContent(id="tabs"):
-                for i, tab in enumerate(self.file_tabs):
-                    with TabPane(tab.filepath.name, id=f"tab-{i}"):
-                        yield Horizontal(
-                            SequenceList(tab.sequences, id=f"sidebar-{i}", classes="sidebar"),
-                            SequenceView(tab.filepath, file_format=tab.file_format, id=f"main-{i}", classes="main-view"),
-                        )
+        with Vertical(id="body"):
+            if len(self.file_tabs) == 1:
+                # 单文件：不用标签页
+                tab = self.file_tabs[0]
+                yield Horizontal(
+                    SequenceList(tab.sequences, id="sidebar-0", classes="sidebar"),
+                    SequenceView(tab.filepath, file_format=tab.file_format, id="main-0", classes="main-view"),
+                )
+            else:
+                # 多文件：标签页
+                with TabbedContent(id="tabs"):
+                    for i, tab in enumerate(self.file_tabs):
+                        with TabPane(tab.filepath.name, id=f"tab-{i}"):
+                            yield Horizontal(
+                                SequenceList(tab.sequences, id=f"sidebar-{i}", classes="sidebar"),
+                                SequenceView(tab.filepath, file_format=tab.file_format, id=f"main-{i}", classes="main-view"),
+                            )
 
         yield StatusBar(id="statusbar")
         yield Footer()
@@ -595,38 +591,43 @@ class FastaBrowser(App):
                 self._get_main_view().load_sequence(tab.sequences[idx])
                 self._update_status()
 
+    # ── 命令栏（动态挂载/卸载）──
+    def _get_command_bar(self) -> "CommandBar | None":
+        bars = self.query("#command-bar")
+        return bars.first() if bars else None
+
+    def _remove_command_bar(self) -> None:
+        bar = self._get_command_bar()
+        if bar is not None:
+            bar.remove()
+
+    async def _show_command_bar(self, mode: str, placeholder: str) -> None:
+        """挂载命令栏到 #body 顶部并聚焦。"""
+        self._command_mode = mode
+        self._remove_command_bar()
+        bar = CommandBar(id="command-bar", mode=mode)
+        bar.placeholder = placeholder
+        body = self.query_one("#body")
+        if body.children:
+            await body.mount(bar, before=body.children[0])
+        else:
+            await body.mount(bar)
+        bar.focus()
+
     # ── 搜索 ──
-    def action_search(self):
-        self._command_mode = "search"
-        bar = self.query_one("#command-bar", CommandBar)
-        bar.mode = "search"
-        bar.placeholder = "输入关键词搜索序列名称... (Enter 确认, Esc 取消)"
-        bar.value = ""
-        bar.add_class("visible")
-        bar.focus()
+    async def action_search(self):
+        await self._show_command_bar("search", "输入关键词搜索序列名称... (Enter 确认, Esc 取消)")
 
-    def action_goto_seq(self):
-        self._command_mode = "goto"
-        bar = self.query_one("#command-bar", CommandBar)
-        bar.mode = "goto"
-        bar.placeholder = "输入序列编号 (1-based)... (Enter 确认, Esc 取消)"
-        bar.value = ""
-        bar.add_class("visible")
-        bar.focus()
+    async def action_goto_seq(self):
+        await self._show_command_bar("goto", "输入序列编号 (1-based)... (Enter 确认, Esc 取消)")
 
-    def action_copy_range(self):
-        self._command_mode = "range"
-        bar = self.query_one("#command-bar", CommandBar)
-        bar.mode = "range"
-        bar.placeholder = "输入位置范围 (如 100-200)... (Enter 复制, Esc 取消)"
-        bar.value = ""
-        bar.add_class("visible")
-        bar.focus()
+    async def action_copy_range(self):
+        await self._show_command_bar("range", "输入位置范围 (如 100-200)... (Enter 复制, Esc 取消)")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """命令栏回车确认。"""
-        bar = self.query_one("#command-bar", CommandBar)
-        bar.remove_class("visible")
+        self._remove_command_bar()
+        self._get_sidebar().focus()
         value = event.value.strip()
         if not value:
             return
@@ -665,17 +666,17 @@ class FastaBrowser(App):
 
     def on_key(self, event) -> None:
         """全局按键拦截：命令栏 Esc 关闭 + q 强制退出。"""
-        bar = self.query_one("#command-bar", CommandBar)
+        bar = self._get_command_bar()
 
-        # 命令栏可见时，Esc 关闭
-        if bar.has_class("visible"):
+        # 命令栏存在时，Esc 关闭，其他键交给 Input 处理
+        if bar is not None:
             if event.key == "escape":
-                bar.remove_class("visible")
+                self._remove_command_bar()
                 self._get_sidebar().focus()
                 event.stop()
-            return  # 命令栏可见时，其他键交给 Input 处理
+            return
 
-        # 命令栏不可见时，q 强制退出（兜底，防止 widget 拦截）
+        # 命令栏不存在时，q 强制退出（兜底，防止 widget 拦截）
         if event.key == "q":
             self.exit()
             event.stop()
