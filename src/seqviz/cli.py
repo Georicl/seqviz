@@ -7,6 +7,7 @@ from seqviz.seq_type import SeqType, detect_seq_type
 from seqviz.fastq import parse_fastq
 from seqviz.browser import FastaBrowser
 from seqviz.file_browser import run_file_browser, scan_directory, is_sequence_file
+from seqviz import config as config_mod
 from seqviz.renderer import colorize_sequence, colorize_quality, quality_stats, quality_bar, position_ruler
 from rich.table import Table
 
@@ -221,6 +222,34 @@ def browse(
 ):
     """交互式浏览 FASTA/FASTQ 文件（支持多文件标签页、目录浏览）。"""
     _launch_browser([Path(f) for f in files])
+
+
+@app.command()
+def config(
+    init: bool = typer.Option(False, "--init", help="生成默认配置文件模板"),
+):
+    """查看当前生效的配置（--init 生成配置文件模板）。"""
+    import json
+
+    if init:
+        cfg_path = config_mod.CONFIG_FILE
+        if cfg_path.exists():
+            console.print(f"[yellow]配置文件已存在: {cfg_path}[/yellow]")
+            raise typer.Exit()
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cfg_path, "w") as f:
+            json.dump(config_mod.DEFAULT_CONFIG, f, indent=2, ensure_ascii=False)
+        console.print(f"[green]已生成默认配置: {cfg_path}[/green]")
+        console.print("[dim]编辑该文件即可自定义浏览器行为、配色和文件后缀。[/dim]")
+        raise typer.Exit()
+
+    # 显示配置文件路径与生效配置
+    cfg_path = config_mod.CONFIG_FILE
+    exists = cfg_path.exists()
+    console.print(f"[dim]配置文件:[/dim] {cfg_path} "
+                  f"[green](已加载)[/green]" if exists else f"[dim]配置文件:[/dim] {cfg_path} [yellow](不存在，使用默认值)[/yellow]")
+    console.print()
+    console.print_json(json.dumps(config_mod.get_config(), ensure_ascii=False))
 
 
 def _calc_n50(sorted_lengths: list[int], total_len: int) -> int:

@@ -12,13 +12,11 @@ from textual.containers import Horizontal
 from rich.text import Text
 
 from seqviz.browser import FileFormat
+from seqviz import config
 
 
-# 支持的序列文件后缀
-SEQ_EXTENSIONS = {
-    ".fa", ".fasta", ".fna", ".faa", ".aa", ".fa", ".seq",
-    ".fq", ".fastq",
-}
+# 支持的序列文件后缀（从配置加载，可被用户 JSON 覆盖）
+SEQ_EXTENSIONS = set(config.get("file_browser.extensions", []))
 
 
 def is_sequence_file(path: Path) -> bool:

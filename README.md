@@ -77,6 +77,51 @@ seqviz browse genome.fasta proteins.faa reads.fastq
 | `stats <file>` | 统计摘要 (条数、长度、N50、GC%) |
 | `fqview <file> [-n N]` | 美化查看 FASTQ 文件 (序列 + 质量值对齐着色) |
 | `browse <path> [...]` | 交互式 TUI 浏览器 (目录 → 文件选择器，文件 → 多标签页) |
+| `config [--init]` | 查看当前生效配置 (--init 生成配置文件模板) |
+
+---
+
+## 配置
+
+seqviz 支持通过 JSON 配置文件自定义浏览器行为、配色和文件后缀。
+
+```bash
+# 生成默认配置文件模板
+seqviz config --init
+
+# 查看当前生效配置
+seqviz config
+```
+
+配置文件位置：`~/.config/seqviz/config.json`（不存在时使用内置默认值）。
+
+仓库内置了一份默认配置模板 [`config/config.json`](config/config.json)，可直接复制到上述位置后修改：
+
+```bash
+mkdir -p ~/.config/seqviz
+cp config/config.json ~/.config/seqviz/config.json
+```
+
+```json
+{
+  "browser": {
+    "wrap_width": 60,           // 每行碱基数
+    "scroll_step": 5,           // j/k 每次滚动行数
+    "sidebar_width": 45,        // 侧栏宽度
+    "show_line_numbers": true,  // 显示位置编号
+    "show_quality": true        // FASTQ 显示质量值行
+  },
+  "colors": {
+    "dna": {"A": "green", "T": "red", "C": "blue", "G": "yellow", "N": "dim"},
+    "quality_thresholds": {"high": 30, "medium": 20, "low": 10}
+  },
+  "file_browser": {
+    "extensions": [".fa", ".fasta", ".fna", ".faa", ".aa", ".seq", ".fq", ".fastq"]
+  }
+}
+```
+
+只需写入想覆盖的字段，其余保持默认（深度合并）。
 
 ---
 
@@ -193,6 +238,7 @@ src/seqviz/
   stats.py          # 统计计算 (N50, GC%)
   browser.py        # TUI 交互式浏览器 (Textual)
   file_browser.py   # 目录文件选择器
+  config.py         # JSON 配置系统
 ```
 
 ---

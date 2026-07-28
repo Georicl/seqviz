@@ -14,6 +14,7 @@ from rich.table import Table as RichTable
 
 from seqviz.seq_type import SeqType, detect_seq_type
 from seqviz.renderer import colorize_sequence, colorize_quality, quality_stats, quality_bar, DNA_COLORS, PROTEIN_COLORS
+from seqviz import config
 
 
 class FileFormat(Enum):
@@ -54,14 +55,16 @@ class SequenceList(OptionList):
 class SequenceView(Static):
     """右侧序列详情显示区（按需渲染，只生成可见行）。"""
 
-    WRAP = 60  # 每行碱基数
-
     def __init__(self, filepath: Path, file_format: FileFormat = FileFormat.FASTA, **kwargs):
         super().__init__(**kwargs)
         self.filepath = filepath
         self.file_format = file_format
         self.view_offset = 0
         self.current_seq: SequenceInfo | None = None
+        # 从配置加载显示参数
+        self.WRAP = config.get("browser.wrap_width", 60)
+        self.show_line_numbers = config.get("browser.show_line_numbers", True)
+        self.show_quality = config.get("browser.show_quality", True)
         # 懒加载：只存原始序列，渲染时按需生成行
         self._seq: str = ""
         self._quality: str = ""  # FASTQ 质量值
@@ -86,7 +89,8 @@ class SequenceView(Static):
                 self._seq = f.readline().strip()
                 f.readline()  # 跳过 +
                 self._quality = f.readline().strip()
-                self._lines_per_chunk = 2  # 序列行 + 质量行
+                # 序列行 + 质量行（show_quality=False 时只显示序列行）
+                self._lines_per_chunk = 2 if self.show_quality else 1
             else:
                 # FASTA: header + 多行序列
                 f.readline()  # 跳过 >header
@@ -152,6 +156,14 @@ class SequenceView(Static):
 
         self._update_display()
 
+    def _make_prefix(self, pos: int | None) -> Text:
+        """生成行前缀（位置编号，可配置关闭）。"""
+        if not self.show_line_numbers:
+            return Text("  ", style="dim")
+        if pos is None:
+            return Text(f"  {'':>10} │ ", style="dim")
+        return Text(f"  {pos:>10,} │ ", style="dim")
+
     def _get_line(self, index: int) -> Text:
         """按需生成第 index 行（懒加载，不预生成全部行）。"""
         if index < len(self._header_lines):
@@ -172,18 +184,17 @@ class SequenceView(Static):
             if is_quality_line:
                 # 质量值行
                 colored_q = colorize_quality(self._quality[chunk_start:chunk_end])
-                line = Text(f"  {'':>10} │ ", style="dim")
+                line = self._make_prefix(None)
                 line.append(colored_q)
                 return line
             else:
                 # 序列行
                 colored = colorize_sequence(self._seq[chunk_start:chunk_end], self._seq_type)
-                pos = chunk_start + 1
-                line = Text(f"  {pos:>10,} │ ", style="dim")
+                line = self._make_prefix(chunk_start + 1)
                 line.append(colored)
                 return line
         else:
-            # FASTA: 每行就是一个 chunk
+            # FASTA 或关闭质量值的 FASTQ：每行就是一个 chunk
             chunk_start = body_idx * self.WRAP
             chunk_end = min(chunk_start + self.WRAP, len(self._seq))
 
@@ -191,8 +202,7 @@ class SequenceView(Static):
                 return Text()
 
             colored = colorize_sequence(self._seq[chunk_start:chunk_end], self._seq_type)
-            pos = chunk_start + 1
-            line = Text(f"  {pos:>10,} │ ", style="dim")
+            line = self._make_prefix(chunk_start + 1)
             line.append(colored)
             return line
 
@@ -474,9 +484,16 @@ class FastaBrowser(App):
 
     def on_mount(self):
         """启动后加载第一个文件的第一条序列，并设置焦点。"""
+        self._apply_sidebar_width()
         self._load_current()
         # 显式设置焦点到侧栏，确保 Footer 显示完整快捷键
         self._get_sidebar().focus()
+
+    def _apply_sidebar_width(self):
+        """从配置应用侧栏宽度。"""
+        width = config.get("browser.sidebar_width", 45)
+        for sidebar in self.query(SequenceList):
+            sidebar.styles.width = width
 
     def _get_main_view(self) -> SequenceView:
         return self.query_one(f"#main-{self.active_tab}", SequenceView)
@@ -505,11 +522,13 @@ class FastaBrowser(App):
 
     # ── 滚动 ──
     def action_scroll_down(self):
-        self._get_main_view().scroll_content_down()
+        step = config.get("browser.scroll_step", 5)
+        self._get_main_view().scroll_content_down(step)
         self._update_status()
 
     def action_scroll_up(self):
-        self._get_main_view().scroll_content_up()
+        step = config.get("browser.scroll_step", 5)
+        self._get_main_view().scroll_content_up(step)
         self._update_status()
 
     def action_page_down(self):

@@ -1,13 +1,12 @@
 from rich.text import Text
 from seqviz.seq_type import SeqType, detect_seq_type
-# DNA 碱基配色方案
-DNA_COLORS = {
-    "A": "green",
-    "T": "red",
-    "C": "blue",
-    "G": "yellow",
-    "N": "dim",
-}
+from seqviz import config
+
+# DNA 碱基配色方案（从配置加载，可被用户 JSON 覆盖）
+DNA_COLORS = dict(config.get("colors.dna", {}))
+
+# 质量值着色阈值（从配置加载）
+_QUALITY_THRESHOLDS = config.get("colors.quality_thresholds", {})
 
 PROTEIN_COLORS: dict[str, str] = {}
 
@@ -50,22 +49,25 @@ def colorize_sequence(seq: str, seq_type: SeqType | None = None) -> Text:
 
 def colorize_quality(quality: str) -> Text:
     """
-    对 FASTQ 质量值进行 Phred 梯度着色。
-    
+    对 FASTQ 质量值进行 Phred 梯度着色（阈值可配置）。
+
     Phred score = ord(char) - 33 (Sanger/Illumina 1.8+ 编码)
-    Q >= 30 → 绿色 (高质量)
-    Q >= 20 → 黄色 (中等)
-    Q >= 10 → bright_red (低)
-    Q <  10 → red (极低)
+    Q >= high   → 绿色 (高质量)
+    Q >= medium → 黄色 (中等)
+    Q >= low    → bright_red (低)
+    Q <  low    → red (极低)
     """
+    high = _QUALITY_THRESHOLDS.get("high", 30)
+    medium = _QUALITY_THRESHOLDS.get("medium", 20)
+    low = _QUALITY_THRESHOLDS.get("low", 10)
     text = Text()
     for char in quality:
         score = ord(char) - 33
-        if score >= 30:
+        if score >= high:
             style = "green"
-        elif score >= 20:
+        elif score >= medium:
             style = "yellow"
-        elif score >= 10:
+        elif score >= low:
             style = "bright_red"
         else:
             style = "red"

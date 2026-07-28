@@ -1,0 +1,35 @@
+{
+  "browser": {
+    "wrap_width": 60,
+    "scroll_step": 5,
+    "sidebar_width": 45,
+    "show_line_numbers": true,
+    "show_quality": true
+  },
+  "colors": {
+    "dna": {
+      "A": "green",
+      "T": "red",
+      "C": "blue",
+      "G": "yellow",
+      "N": "dim"
+    },
+    "quality_thresholds": {
+      "high": 30,
+      "medium": 20,
+      "low": 10
+    }
+  },
+  "file_browser": {
+    "extensions": [
+      ".fa",
+      ".fasta",
+      ".fna",
+      ".faa",
+      ".aa",
+      ".seq",
+      ".fq",
+      ".fastq"
+    ]
+  }
+}
