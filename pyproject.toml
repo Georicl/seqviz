@@ -10,7 +10,7 @@ name = "seqviz"
 version = "0.4.0"
 description = "A terminal visualizer for biological sequence data — FASTA / FASTQ / VCF"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "rich>=15.0.0",
     "textual>=8.2.8",

@@ -1,6 +1,7 @@
 from pathlib import Path
 from enum import Enum
 import subprocess
+import threading
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -8,6 +9,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Header, Footer, Static, OptionList, Input, TabbedContent, TabPane
 from textual.widgets.option_list import Option
 from textual.containers import Horizontal, Vertical
+from textual.worker import Worker, get_current_worker
 from rich.text import Text
 from rich.panel import Panel
 from rich.table import Table as RichTable
@@ -27,11 +29,11 @@ class SequenceInfo:
     """存储一条序列的元信息（不加载序列本身）。"""
     __slots__ = ("index", "header", "offset", "length", "has_quality")
 
-    def __init__(self, index: int, header: str, offset: int, length: int, has_quality: bool = False):
+    def __init__(self, index: int, header: str, offset: int, length: int = -1, has_quality: bool = False):
         self.index = index
         self.header = header
         self.offset = offset        # 文件中的字节偏移量（用于快速定位）
-        self.length = length
+        self.length = length        # -1 表示未知（懒计算）
         self.has_quality = has_quality  # FASTQ 记录有质量值
 
 
@@ -42,19 +44,33 @@ class SequenceList(OptionList):
         super().__init__(**kwargs)
         self.sequences = sequences
         for seq in sequences:
-            label = seq.header[:20] + "..." if len(seq.header) > 20 else seq.header
-            # 长度格式化：>1M 用 Mbp，>1K 用 Kbp
-            if seq.length >= 1_000_000:
-                size_str = f"{seq.length / 1_000_000:.1f}M"
-            elif seq.length >= 1_000:
-                size_str = f"{seq.length / 1_000:.1f}K"
-            else:
-                size_str = str(seq.length)
-            self.add_option(Option(f" {label}  {size_str}bp", id=f"seq-{seq.index}"))
+            self.add_option(Option(self._make_label(seq), id=f"seq-{seq.index}"))
+
+    @staticmethod
+    def _make_label(seq: SequenceInfo) -> str:
+        label = seq.header[:20] + "..." if len(seq.header) > 20 else seq.header
+        if seq.length < 0:
+            size_str = "..."
+        elif seq.length >= 1_000_000:
+            size_str = f"{seq.length / 1_000_000:.1f}M"
+        elif seq.length >= 1_000:
+            size_str = f"{seq.length / 1_000:.1f}K"
+        else:
+            size_str = str(seq.length)
+        return f" {label}  {size_str}bp"
+
+    def append_sequences(self, new_seqs: list[SequenceInfo]):
+        """追加新扫描到的序列（后台扫描用）。"""
+        for seq in new_seqs:
+            self.sequences.append(seq)
+            self.add_option(Option(self._make_label(seq), id=f"seq-{seq.index}"))
 
 
 class SequenceView(Static):
     """右侧序列详情显示区（按需渲染，只生成可见行）。"""
+
+    # 超过此阈值的 FASTA 序列使用分块加载（1Mbp）
+    LARGE_SEQ_THRESHOLD = 1_000_000
 
     def __init__(self, filepath: Path, file_format: FileFormat = FileFormat.FASTA, **kwargs):
         super().__init__(**kwargs)
@@ -66,19 +82,25 @@ class SequenceView(Static):
         self.WRAP = config.get("browser.wrap_width", 60)
         self.show_line_numbers = config.get("browser.show_line_numbers", True)
         self.show_quality = config.get("browser.show_quality", True)
-        # 懒加载：只存原始序列，渲染时按需生成行
+        # 序列数据
         self._seq: str = ""
         self._quality: str = ""  # FASTQ 质量值
         self._seq_type: SeqType = SeqType.DNA
         self._header_lines: list[Text] = []  # 统计信息行
         self._total_lines: int = 0
         self._lines_per_chunk: int = 1  # FASTA=1行/chunk, FASTQ=2行/chunk(序列+质量)
+        # P1: 大序列分块加载
+        self._is_large: bool = False
+        self._seq_data_offset: int = 0   # 序列数据在文件中的起始偏移
+        self._file_line_width: int = 80  # FASTA 文件每行字符数（含换行符）
+        self._seq_length: int = 0        # 序列总长度
 
     def load_sequence(self, seq_info: SequenceInfo):
-        """用 offset 直接 seek 到目标位置，O(1) 定位。"""
+        """用 offset 直接 seek 到目标位置，O(1) 定位。大序列分块加载。"""
         self.current_seq = seq_info
         self.view_offset = 0
         self._quality = ""
+        self._is_large = False
 
         # ── 用 seek 直接跳到序列位置 ──
         with open(self.filepath) as f:
@@ -90,28 +112,59 @@ class SequenceView(Static):
                 self._seq = f.readline().strip()
                 f.readline()  # 跳过 +
                 self._quality = f.readline().strip()
-                # 序列行 + 质量行（show_quality=False 时只显示序列行）
                 self._lines_per_chunk = 2 if self.show_quality else 1
+                self._seq_length = len(self._seq)
             else:
-                # FASTA: header + 多行序列
-                f.readline()  # 跳过 >header
+                # FASTA: 检测是否为大序列
+                header_line = f.readline()  # 跳过 >header
+                seq_data_start = f.tell()
+                first_seq_line = f.readline()
+                file_line_len = len(first_seq_line)  # 含换行符
+
+                # 估算序列长度
+                est_length = seq_info.length if seq_info.length >= 0 else -1
+
+                # 读取序列：先尝试全量读取（最多读到阈值），超过则切换分块模式
+                f.seek(seq_data_start)
                 seq_parts: list[str] = []
+                total_read = 0
+                is_large = False
                 while True:
                     line = f.readline()
                     if not line or line.startswith(">"):
                         break
                     seq_parts.append(line.strip())
-                self._seq = "".join(seq_parts)
-                self._lines_per_chunk = 1
+                    total_read += len(line.strip())
+                    if est_length < 0 and total_read > self.LARGE_SEQ_THRESHOLD:
+                        # 超过阈值，切换为分块模式
+                        is_large = True
+                        break
 
-        self._seq_type = detect_seq_type(self._seq)
+                if is_large or (est_length > self.LARGE_SEQ_THRESHOLD):
+                    # ── 大序列：分块加载模式 ──
+                    self._is_large = True
+                    self._seq_data_offset = seq_data_start
+                    self._file_line_width = file_line_len
+                    self._seq_length = est_length if est_length > 0 else 0
+                    # 只保留前 10K 用于类型检测
+                    self._seq = "".join(seq_parts)[:10000]
+                    self._lines_per_chunk = 1
+                else:
+                    # ── 普通序列：全量加载 ──
+                    self._seq = "".join(seq_parts)
+                    self._seq_length = len(self._seq)
+                    self._lines_per_chunk = 1
+
+        self._seq_type = detect_seq_type(self._seq[:10000])
 
         # ── 生成统计信息行 ──
         type_label = "DNA" if self._seq_type == SeqType.DNA else "Protein"
         type_icon = "[DNA]" if self._seq_type == SeqType.DNA else "[Protein]"
-        gc = (self._seq.upper().count("G") + self._seq.upper().count("C")) / len(self._seq) * 100 if self._seq else 0
 
-        # 序列名（从 header 提取 ID）
+        # GC 含量：大序列用前 10K 估算
+        sample = self._seq[:10000] if self._is_large else self._seq
+        gc = (sample.upper().count("G") + sample.upper().count("C")) / len(sample) * 100 if sample else 0
+
         seq_id = seq_info.header.split()[0] if seq_info.header else "unknown"
         desc = seq_info.header[len(seq_id):].strip() if len(seq_info.header) > len(seq_id) else ""
 
@@ -123,9 +176,13 @@ class SequenceView(Static):
 
         info_line = Text()
         info_line.append(f"   Length: ", style="dim")
-        info_line.append(f"{len(self._seq):,}", style="bold green")
+        if self._seq_length > 0:
+            info_line.append(f"{self._seq_length:,}", style="bold green")
+        else:
+            info_line.append("...", style="bold green")
         info_line.append(" bp   GC: ", style="dim")
-        info_line.append(f"{gc:.1f}%", style="bold yellow")
+        gc_note = "~" if self._is_large else ""
+        info_line.append(f"{gc_note}{gc:.1f}%", style="bold yellow")
         info_line.append(f"   Type: ", style="dim")
         info_line.append(type_label, style="bold magenta")
 
@@ -142,7 +199,6 @@ class SequenceView(Static):
             q_line.append(f"{qstats['q30_pct']:.0%}", style="bold yellow")
             header_lines.append(q_line)
 
-            # 质量分布条
             bar_line = Text("   ", style="dim")
             bar_line.append(quality_bar(self._quality, width=50))
             header_lines.append(bar_line)
@@ -151,11 +207,62 @@ class SequenceView(Static):
         header_lines.append(Text())
         self._header_lines = header_lines
 
-        # 计算总行数 = 统计行 + 序列行(FASTQ 每个 chunk 占 2 行)
-        chunk_count = (len(self._seq) + self.WRAP - 1) // self.WRAP if self._seq else 0
+        # 计算总行数
+        if self._seq_length > 0:
+            chunk_count = (self._seq_length + self.WRAP - 1) // self.WRAP
+        elif self._is_large:
+            # 长度未知时，用文件大小估算（假设序列占文件 90%）
+            import os
+            try:
+                file_size = os.path.getsize(self.filepath)
+                est_bp = int(file_size * 0.9)
+                chunk_count = (est_bp + self.WRAP - 1) // self.WRAP
+            except OSError:
+                chunk_count = 100000  # 回退估计
+        else:
+            chunk_count = 0
         self._total_lines = len(self._header_lines) + chunk_count * self._lines_per_chunk
 
         self._update_display()
+
+    @staticmethod
+    def _estimate_fasta_length(f, seq_data_start: int) -> int:
+        """快速估算 FASTA 序列长度（读到下一个 > 或 EOF）。"""
+        length = 0
+        while True:
+            pos = f.tell()
+            line = f.readline()
+            if not line or line.startswith(">"):
+                f.seek(pos)
+                break
+            length += len(line.strip())
+        f.seek(seq_data_start)  # 回到序列数据开头
+        return length
+
+    def _load_chunk(self, seq_start: int, seq_end: int) -> str:
+        """P1: 从文件加载序列的 [seq_start, seq_end) 区间（大序列用）。"""
+        if not self._is_large:
+            return self._seq[seq_start:seq_end]
+
+        # 计算文件偏移：FASTA 文件行通常是固定宽度
+        chars_per_line = self._file_line_width - 1  # 减去换行符
+        if chars_per_line <= 0:
+            chars_per_line = 80
+
+        start_line = seq_start // chars_per_line
+        start_col = seq_start % chars_per_line
+        file_offset = self._seq_data_offset + start_line * self._file_line_width + start_col
+
+        needed = seq_end - seq_start
+        result = []
+        with open(self.filepath) as f:
+            f.seek(file_offset)
+            while len("".join(result)) < needed:
+                line = f.readline()
+                if not line or line.startswith(">"):
+                    break
+                result.append(line.strip())
+        return "".join(result)[:needed]
 
     def _make_prefix(self, pos: int | None) -> Text:
         """生成行前缀（位置编号，可配置关闭）。"""
@@ -166,7 +273,7 @@ class SequenceView(Static):
         return Text(f"  {pos:>10,} │ ", style="dim")
 
     def _get_line(self, index: int) -> Text:
-        """按需生成第 index 行（懒加载，不预生成全部行）。"""
+        """按需生成第 index 行（懒加载，大序列分块读取）。"""
         if index < len(self._header_lines):
             return self._header_lines[index]
 
@@ -177,32 +284,32 @@ class SequenceView(Static):
             chunk_idx = body_idx // 2
             is_quality_line = body_idx % 2 == 1
             chunk_start = chunk_idx * self.WRAP
-            chunk_end = min(chunk_start + self.WRAP, len(self._seq))
+            chunk_end = min(chunk_start + self.WRAP, self._seq_length)
 
-            if chunk_start >= len(self._seq):
+            if chunk_start >= self._seq_length:
                 return Text()
 
             if is_quality_line:
-                # 质量值行
                 colored_q = colorize_quality(self._quality[chunk_start:chunk_end])
                 line = self._make_prefix(None)
                 line.append(colored_q)
                 return line
             else:
-                # 序列行
-                colored = colorize_sequence(self._seq[chunk_start:chunk_end], self._seq_type)
+                seq_chunk = self._load_chunk(chunk_start, chunk_end)
+                colored = colorize_sequence(seq_chunk, self._seq_type)
                 line = self._make_prefix(chunk_start + 1)
                 line.append(colored)
                 return line
         else:
-            # FASTA 或关闭质量值的 FASTQ：每行就是一个 chunk
+            # FASTA 或关闭质量值的 FASTQ
             chunk_start = body_idx * self.WRAP
-            chunk_end = min(chunk_start + self.WRAP, len(self._seq))
+            chunk_end = min(chunk_start + self.WRAP, self._seq_length)
 
-            if chunk_start >= len(self._seq):
+            if chunk_start >= self._seq_length:
                 return Text()
 
-            colored = colorize_sequence(self._seq[chunk_start:chunk_end], self._seq_type)
+            seq_chunk = self._load_chunk(chunk_start, chunk_end)
+            colored = colorize_sequence(seq_chunk, self._seq_type)
             line = self._make_prefix(chunk_start + 1)
             line.append(colored)
             return line
@@ -352,8 +459,9 @@ class FastaBrowser(App):
         self.active_tab = 0
         self._command_mode: str = ""  # "search" or "goto"
         self.source_dir = source_dir  # 来源目录（非 None 时 B 键可返回文件选择器）
+        self._scan_tasks: list[tuple[Path, FileFormat, int]] = []  # 待后台扫描的文件
 
-        # 扫描所有文件
+        # 扫描所有文件（FASTA 懒计算长度，极快）
         for fp in filepaths:
             fmt = self._detect_format(fp)
             seqs = self._scan_file(fp, fmt)
@@ -374,8 +482,47 @@ class FastaBrowser(App):
         return FileFormat.FASTQ if first_char == "@" else FileFormat.FASTA
 
     @staticmethod
+    def _scan_file_quick(filepath: Path, fmt: FileFormat, limit: int = 500) -> tuple[list[SequenceInfo], bool]:
+        """快速扫描文件前 N 条序列。返回 (sequences, is_done)。"""
+        sequences: list[SequenceInfo] = []
+        if fmt == FileFormat.FASTQ:
+            offset = 0
+            with open(filepath) as f:
+                idx = 0
+                while True:
+                    record_offset = offset
+                    header_line = f.readline()
+                    if not header_line:
+                        return sequences, True
+                    offset += len(header_line.encode())
+                    seq_line = f.readline()
+                    offset += len(seq_line.encode())
+                    plus_line = f.readline()
+                    offset += len(plus_line.encode())
+                    quality_line = f.readline()
+                    offset += len(quality_line.encode())
+                    header = header_line.strip()[1:]
+                    sequences.append(SequenceInfo(idx, header, record_offset, len(seq_line.strip()), has_quality=True))
+                    idx += 1
+                    if idx >= limit:
+                        return sequences, False
+        else:
+            # FASTA: 只记录 header + offset，不计算长度
+            with open(filepath) as f:
+                idx = 0
+                offset = 0
+                for line in f:
+                    if line.startswith(">"):
+                        if idx >= limit:
+                            return sequences, False
+                        sequences.append(SequenceInfo(idx, line[1:].strip(), offset))
+                        idx += 1
+                    offset += len(line.encode())
+        return sequences, True
+
+    @staticmethod
     def _scan_file(filepath: Path, fmt: FileFormat) -> list[SequenceInfo]:
-        """扫描文件建立索引。"""
+        """扫描文件建立索引（完整扫描，FASTA 不计算长度）。"""
         sequences: list[SequenceInfo] = []
         if fmt == FileFormat.FASTQ:
             offset = 0
@@ -397,25 +544,15 @@ class FastaBrowser(App):
                     sequences.append(SequenceInfo(idx, header, record_offset, len(seq_line.strip()), has_quality=True))
                     idx += 1
         else:
-            offset = 0
+            # FASTA: 只记录 header + offset，不计算长度（懒计算）
             with open(filepath) as f:
                 idx = 0
-                current_header = None
-                current_offset = 0
-                current_len = 0
+                offset = 0
                 for line in f:
                     if line.startswith(">"):
-                        if current_header is not None:
-                            sequences.append(SequenceInfo(idx, current_header, current_offset, current_len))
-                            idx += 1
-                        current_header = line[1:].strip()
-                        current_offset = offset
-                        current_len = 0
-                    else:
-                        current_len += len(line.strip())
+                        sequences.append(SequenceInfo(idx, line[1:].strip(), offset))
+                        idx += 1
                     offset += len(line.encode())
-                if current_header is not None:
-                    sequences.append(SequenceInfo(idx, current_header, current_offset, current_len))
         return sequences
 
     @property
@@ -451,6 +588,75 @@ class FastaBrowser(App):
         self._load_current()
         # 显式设置焦点到侧栏，确保 Footer 显示完整快捷键
         self._get_sidebar().focus()
+        # 后台继续扫描剩余序列
+        if self._scan_tasks:
+            self.run_worker(self._background_scan(), exclusive=False)
+
+    async def _background_scan(self):
+        """后台扫描剩余序列，每批 200 条更新一次侧栏。"""
+        BATCH = 200
+        for fp, fmt, start_idx in self._scan_tasks:
+            # 找到对应的 tab
+            tab_idx = next(i for i, t in enumerate(self.file_tabs) if t.filepath == fp)
+            tab = self.file_tabs[tab_idx]
+            batch: list[SequenceInfo] = []
+
+            if fmt == FileFormat.FASTQ:
+                # FASTQ: 从 start_idx 继续
+                offset = 0
+                with open(fp) as f:
+                    idx = 0
+                    while True:
+                        record_offset = offset
+                        header_line = f.readline()
+                        if not header_line:
+                            break
+                        offset += len(header_line.encode())
+                        seq_line = f.readline()
+                        offset += len(seq_line.encode())
+                        plus_line = f.readline()
+                        offset += len(plus_line.encode())
+                        quality_line = f.readline()
+                        offset += len(quality_line.encode())
+                        if idx >= start_idx:
+                            header = header_line.strip()[1:]
+                            seq_info = SequenceInfo(idx, header, record_offset, len(seq_line.strip()), has_quality=True)
+                            tab.sequences.append(seq_info)
+                            batch.append(seq_info)
+                            if len(batch) >= BATCH:
+                                self._update_sidebar(tab_idx, batch)
+                                batch = []
+                        idx += 1
+            else:
+                # FASTA: 从 start_idx 继续，只记录 header + offset
+                with open(fp) as f:
+                    idx = 0
+                    offset = 0
+                    for line in f:
+                        if line.startswith(">"):
+                            if idx >= start_idx:
+                                seq_info = SequenceInfo(idx, line[1:].strip(), offset)
+                                tab.sequences.append(seq_info)
+                                batch.append(seq_info)
+                                if len(batch) >= BATCH:
+                                    self._update_sidebar(tab_idx, batch)
+                                    batch = []
+                            idx += 1
+                        offset += len(line.encode())
+
+            # 最后一批
+            if batch:
+                self._update_sidebar(tab_idx, batch)
+
+        self._scan_tasks.clear()
+
+    def _update_sidebar(self, tab_idx: int, new_seqs: list[SequenceInfo]):
+        """更新侧栏（从 worker 回调到 UI 线程）。"""
+        try:
+            sidebar = self.query_one(f"#sidebar-{tab_idx}", SequenceList)
+            sidebar.append_sequences(new_seqs)
+        except Exception:
+            pass
 
     def _apply_sidebar_width(self):
         """从配置应用侧栏宽度。"""
@@ -480,7 +686,7 @@ class FastaBrowser(App):
             total_seqs=len(tab.sequences),
             view_offset=main_view.view_offset,
             total_lines=main_view._total_lines,
-            seq_length=len(main_view._seq),
+            seq_length=main_view._seq_length,
         )
 
     # ── 滚动 ──
@@ -663,8 +869,8 @@ class FastaBrowser(App):
     def _handle_range_copy(self, value: str):
         """解析位置范围并复制对应序列片段。"""
         main_view = self._get_main_view()
-        seq = main_view._seq
-        if not seq:
+        seq_len = main_view._seq_length
+        if not seq_len:
             self.notify("当前没有序列", title="范围复制", severity="warning")
             return
 
@@ -681,11 +887,11 @@ class FastaBrowser(App):
             return
 
         # 边界检查 (1-based, 含两端)
-        if start < 1 or end > len(seq) or start > end:
-            self.notify(f"范围超出序列长度 (1-{len(seq)})", title="范围复制", severity="warning")
+        if start < 1 or end > seq_len or start > end:
+            self.notify(f"范围超出序列长度 (1-{seq_len})", title="范围复制", severity="warning")
             return
 
-        fragment = seq[start - 1:end]
+        fragment = main_view._load_chunk(start - 1, end)
         if self._copy_to_clipboard(fragment):
             self.notify(f"已复制 {start}-{end} ({len(fragment)} bp) 到剪贴板", title="范围复制")
         else:
@@ -699,9 +905,11 @@ class FastaBrowser(App):
         if tab.file_format == FileFormat.FASTQ:
             return f"@{seq_info.header}\n{main_view._seq}\n+\n{main_view._quality}\n"
         else:
+            # 大序列分块读取构建
             lines = [f">{seq_info.header}"]
-            for i in range(0, len(main_view._seq), 60):
-                lines.append(main_view._seq[i:i+60])
+            seq_len = main_view._seq_length
+            for i in range(0, seq_len, 60):
+                lines.append(main_view._load_chunk(i, min(i + 60, seq_len)))
             return "\n".join(lines) + "\n"
 
     def action_export_seq(self):
