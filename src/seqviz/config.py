@@ -11,7 +11,7 @@ DEFAULT_CONFIG: dict = {
     "browser": {
         "wrap_width": 60,           # 每行碱基数
         "scroll_step": 5,           # j/k 每次滚动行数
-        "sidebar_width": 45,        # 侧栏宽度
+        "sidebar_width": 32,        # 侧栏宽度
         "show_line_numbers": True,  # 显示位置编号
         "show_quality": True,       # FASTQ 显示质量值行
     },

@@ -42,7 +42,7 @@ class SequenceList(OptionList):
         super().__init__(**kwargs)
         self.sequences = sequences
         for seq in sequences:
-            label = seq.header[:35] + "..." if len(seq.header) > 35 else seq.header
+            label = seq.header[:20] + "..." if len(seq.header) > 20 else seq.header
             # 长度格式化：>1M 用 Mbp，>1K 用 Kbp
             if seq.length >= 1_000_000:
                 size_str = f"{seq.length / 1_000_000:.1f}M"
@@ -454,7 +454,7 @@ class FastaBrowser(App):
 
     def _apply_sidebar_width(self):
         """从配置应用侧栏宽度。"""
-        width = config.get("browser.sidebar_width", 45)
+        width = config.get("browser.sidebar_width", 32)
         for sidebar in self.query(SequenceList):
             sidebar.styles.width = width
 

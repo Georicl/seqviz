@@ -23,7 +23,7 @@ class TestConfig:
         cfg = config_mod.get_config()
         assert cfg["browser"]["wrap_width"] == 60
         assert cfg["browser"]["scroll_step"] == 5
-        assert cfg["browser"]["sidebar_width"] == 45
+        assert cfg["browser"]["sidebar_width"] == 32
         assert cfg["browser"]["show_line_numbers"] is True
         assert cfg["browser"]["show_quality"] is True
 

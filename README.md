@@ -236,7 +236,7 @@ seqviz config --init
   "browser": {
     "wrap_width": 60,           // 每行碱基数
     "scroll_step": 5,           // j/k 每次滚动行数
-    "sidebar_width": 45,        // 侧栏宽度
+    "sidebar_width": 32,        // 侧栏宽度
     "show_line_numbers": true,  // 是否显示位置编号
     "show_quality": true        // FASTQ 是否显示质量值行
   },

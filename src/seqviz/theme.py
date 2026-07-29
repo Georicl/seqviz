@@ -78,7 +78,7 @@ def build_browser_css(theme: dict) -> str:
         height: 1fr;
     }}
     .sidebar {{
-        width: 45;
+        width: 32;
         border-right: thick {border};
         background: {bg};
         color: {fg};
