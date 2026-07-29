@@ -21,3 +21,4 @@ test/*.fastq
 test/*.gz
 test/*.codingseq
 test/__pycache__/
+.qoder/

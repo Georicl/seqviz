@@ -13,7 +13,7 @@ from rich.text import Text
 
 from seqviz.browser import FileFormat
 from seqviz import config
-from seqviz.theme import get_theme, build_file_browser_css
+from seqviz.theme import get_theme, build_file_browser_css, get_theme_name, is_dark_theme
 
 
 # 支持的序列文件后缀（从配置加载，可被用户 JSON 覆盖）
@@ -150,7 +150,7 @@ class FileBrowser(App):
 
     TITLE = "Seqviz"
     SUB_TITLE = "序列文件选择器"
-    DARK = False  # 浅色主题（白底黑字）
+    DARK = is_dark_theme(get_theme_name())  # 根据主题自动切换
 
     CSS = build_file_browser_css(get_theme())
 

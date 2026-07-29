@@ -15,7 +15,7 @@ from rich.table import Table as RichTable
 from seqviz.seq_type import SeqType, detect_seq_type
 from seqviz.renderer import colorize_sequence, colorize_quality, quality_stats, quality_bar, DNA_COLORS, PROTEIN_COLORS
 from seqviz import config
-from seqviz.theme import get_theme, build_browser_css
+from seqviz.theme import get_theme, build_browser_css, get_theme_name, is_dark_theme
 
 
 class FileFormat(Enum):
@@ -321,7 +321,7 @@ class FastaBrowser(App):
 
     TITLE = "Seqviz"
     SUB_TITLE = "生物序列终端浏览器"
-    DARK = False  # 浅色主题（白底黑字）
+    DARK = is_dark_theme(get_theme_name())  # 根据主题自动切换
 
     CSS = build_browser_css(get_theme())
 

@@ -277,6 +277,8 @@ def config(
                 json.dump(theme_mod.DEFAULT_THEME, f, indent=2, ensure_ascii=False)
             console.print(f"[green]已生成默认主题: {theme_mod.THEME_FILE}[/green]")
         console.print("[dim]编辑 config.json 自定义行为/序列配色/后缀；编辑 theme.json 自定义界面主题。[/dim]")
+        console.print(f"[dim]可用内置主题:[/dim] {', '.join(theme_mod.list_themes())}")
+        console.print("[dim]在 config.json 中设置 \"theme\": \"nord\" 即可切换[/dim]")
         raise typer.Exit()
 
     # 显示配置文件路径与生效配置
@@ -294,6 +296,16 @@ def config(
                   f"[green](已加载)[/green]" if th_exists else f"[dim]主题文件:[/dim] {th_path} [yellow](不存在，使用默认值)[/yellow]")
     console.print()
     console.print_json(json.dumps(theme_mod.get_theme(), ensure_ascii=False))
+    console.print()
+    # 显示可用内置主题
+    current = config_mod.get("theme", "light")
+    themes = theme_mod.list_themes()
+    theme_list = "  ".join(
+        f"[bold green]● {t}[/bold green]" if t == current else f"[dim]○ {t}[/dim]"
+        for t in themes
+    )
+    console.print(f"[dim]可用主题:[/dim] {theme_list}")
+    console.print(f"[dim]在 config.json 中设置 \"theme\": \"{themes[0]}\" 切换主题[/dim]")
 
 
 def _calc_n50(sorted_lengths: list[int], total_len: int) -> int:

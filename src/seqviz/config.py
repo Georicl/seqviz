@@ -8,6 +8,7 @@ from pathlib import Path
 
 # 内置默认配置
 DEFAULT_CONFIG: dict = {
+    "theme": "light",               # 内置主题名: light/dark/nord/gruvbox/catppuccin/solarized/rose-pine/tokyo-night
     "browser": {
         "wrap_width": 60,           # 每行碱基数
         "scroll_step": 5,           # j/k 每次滚动行数
