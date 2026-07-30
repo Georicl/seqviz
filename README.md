@@ -118,6 +118,7 @@ seqviz config           # 查看当前生效配置与可用主题
   "theme": "nord",
   "browser": {
     "wrap_width": 60,
+    "auto_wrap": true,
     "scroll_step": 5,
     "sidebar_width": 32,
     "show_line_numbers": true,
@@ -125,6 +126,8 @@ seqviz config           # 查看当前生效配置与可用主题
   }
 }
 ```
+
+> `auto_wrap: true`（默认）时，序列按窗口宽度自动换行；设为 `false` 则使用固定的 `wrap_width`。
 
 </details>
 
@@ -135,7 +138,7 @@ seqviz config           # 查看当前生效配置与可用主题
 | 主题 | 风格 | 色调 |
 |------|------|------|
 | `light` | 白底黑字 · 清晰明亮 | ☀️ 亮色 |
-| `dark` | 经典深色 · 护眼低对比 | 🌙 暗色 |
+| `dark` | 经典深色 · 护眼低对比（默认） | 🌙 暗色 |
 | `nord` | 北极冷色 · 柔和优雅 | 🧊 冷色 |
 | `gruvbox` | 暖色复古 · 棕黄基调 | 🔥 暖色 |
 | `catppuccin` | 柔和粉彩 · 温暖暗色 | 🌸 粉彩 |

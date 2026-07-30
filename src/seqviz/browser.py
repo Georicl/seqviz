@@ -79,7 +79,9 @@ class SequenceView(Static):
         self.view_offset = 0
         self.current_seq: SequenceInfo | None = None
         # 从配置加载显示参数
-        self.WRAP = config.get("browser.wrap_width", 60)
+        self._config_wrap = config.get("browser.wrap_width", 60)
+        self.WRAP = self._config_wrap
+        self.auto_wrap = config.get("browser.auto_wrap", True)  # 自适应窗口宽度
         self.show_line_numbers = config.get("browser.show_line_numbers", True)
         self.show_quality = config.get("browser.show_quality", True)
         # 序列数据
@@ -101,6 +103,8 @@ class SequenceView(Static):
         self.view_offset = 0
         self._quality = ""
         self._is_large = False
+        # 根据当前窗口宽度计算换行宽度
+        self.WRAP = self._compute_wrap()
 
         # ── 用 seek 直接跳到序列位置 ──
         with open(self.filepath) as f:
@@ -208,20 +212,7 @@ class SequenceView(Static):
         self._header_lines = header_lines
 
         # 计算总行数
-        if self._seq_length > 0:
-            chunk_count = (self._seq_length + self.WRAP - 1) // self.WRAP
-        elif self._is_large:
-            # 长度未知时，用文件大小估算（假设序列占文件 90%）
-            import os
-            try:
-                file_size = os.path.getsize(self.filepath)
-                est_bp = int(file_size * 0.9)
-                chunk_count = (est_bp + self.WRAP - 1) // self.WRAP
-            except OSError:
-                chunk_count = 100000  # 回退估计
-        else:
-            chunk_count = 0
-        self._total_lines = len(self._header_lines) + chunk_count * self._lines_per_chunk
+        self._recalc_total_lines()
 
         self._update_display()
 
@@ -314,6 +305,34 @@ class SequenceView(Static):
             line.append(colored)
             return line
 
+    def _compute_wrap(self) -> int:
+        """根据窗口宽度自适应计算换行宽度。"""
+        if not self.auto_wrap:
+            return self._config_wrap
+        width = self.size.width
+        if width <= 0:
+            return self._config_wrap
+        # 行前缀宽度: "  {pos:>10,} │ " ≈ 15 字符；加上容器 padding
+        prefix_width = 15 if self.show_line_numbers else 2
+        available = width - prefix_width - 2
+        return max(available, 20)  # 最小 20 字符
+
+    def _recalc_total_lines(self):
+        """根据当前 WRAP 重新计算总行数。"""
+        if self._seq_length > 0:
+            chunk_count = (self._seq_length + self.WRAP - 1) // self.WRAP
+        elif self._is_large:
+            import os
+            try:
+                file_size = os.path.getsize(self.filepath)
+                est_bp = int(file_size * 0.9)
+                chunk_count = (est_bp + self.WRAP - 1) // self.WRAP
+            except OSError:
+                chunk_count = 100000
+        else:
+            chunk_count = 0
+        self._total_lines = len(self._header_lines) + chunk_count * self._lines_per_chunk
+
     def _update_display(self):
         """只渲染当前可见区域的行。"""
         height = self.size.height if self.size.height > 0 else 30
@@ -325,7 +344,11 @@ class SequenceView(Static):
         self.update(content)
 
     def on_resize(self, event) -> None:
-        """组件尺寸变化时重新渲染（确保填满屏幕、适应终端缩放）。"""
+        """组件尺寸变化时重新计算换行宽度并渲染（适应终端缩放、填满窗口）。"""
+        new_wrap = self._compute_wrap()
+        if new_wrap != self.WRAP:
+            self.WRAP = new_wrap
+            self._recalc_total_lines()
         if self._seq or self._header_lines:
             self._update_display()
 
@@ -852,18 +875,39 @@ class FastaBrowser(App):
 
     # ── 导出 & 复制 ──
     def _copy_to_clipboard(self, text: str) -> bool:
-        """复制文本到系统剪贴板，成功返回 True。"""
+        """复制文本到剪贴板，成功返回 True。
+
+        策略：系统工具优先（反馈可靠），失败后回退 OSC 52（适用于无图形界面/SSH 场景）。
+        """
         import platform
         system = platform.system()
+        data = text.encode()
         try:
             if system == "Darwin":  # macOS
-                subprocess.run(["pbcopy"], input=text.encode(), check=True)
+                subprocess.run(["pbcopy"], input=data, check=True)
+                return True
             elif system == "Linux":
-                subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), check=True)
+                # 依次尝试 xclip / xsel / wl-copy，任一成功即可
+                for cmd in (
+                    ["xclip", "-selection", "clipboard"],
+                    ["xsel", "--clipboard", "--input"],
+                    ["wl-copy"],
+                ):
+                    try:
+                        subprocess.run(cmd, input=data, check=True)
+                        return True
+                    except (OSError, subprocess.CalledProcessError):
+                        continue
             else:  # Windows
-                subprocess.run(["clip"], input=text.encode(), check=True)
+                subprocess.run(["clip"], input=data, check=True)
+                return True
+        except OSError:
+            pass
+        # 回退: OSC 52 —— 通过终端转义序列写入本地剪贴板（需终端支持，SSH 下同样有效）
+        try:
+            self.copy_to_clipboard(text)
             return True
-        except (FileNotFoundError, subprocess.CalledProcessError):
+        except Exception:
             return False
 
     def _handle_range_copy(self, value: str):

@@ -127,15 +127,15 @@ class TestTheme:
     def teardown_method(self):
         theme_mod._theme = None
 
-    def test_default_theme_white_bg(self):
+    def test_default_theme_dark_bg(self):
         theme = theme_mod.get_theme()
-        assert theme["background"] == "#ffffff"
-        assert theme["foreground"] == "#1a1a1a"
+        assert theme["background"] == "#1e1e2e"  # 默认 dark 主题
+        assert theme["foreground"] == "#cdd6f4"
 
     def test_default_theme_borders(self):
         theme = theme_mod.get_theme()
-        assert theme["border"] == "#d8d8d8"
-        assert theme["accent"] == "#0066cc"
+        assert theme["border"] == "#45475a"
+        assert theme["accent"] == "#89b4fa"
 
     def test_deep_merge(self):
         merged = theme_mod._deep_merge(
@@ -152,7 +152,7 @@ class TestTheme:
         theme_mod._theme = None
         theme = theme_mod.get_theme()
         assert theme["background"] == "#eeeeee"
-        assert theme["foreground"] == "#1a1a1a"  # 保留默认
+        assert theme["foreground"] == "#cdd6f4"  # 保留默认(dark)
 
     def test_load_theme_invalid_falls_back(self, tmp_path, monkeypatch):
         theme_file = tmp_path / "theme.json"
@@ -160,14 +160,14 @@ class TestTheme:
         monkeypatch.setattr(theme_mod, "THEME_FILE", theme_file)
         theme_mod._theme = None
         theme = theme_mod.get_theme()
-        assert theme["background"] == "#ffffff"
+        assert theme["background"] == "#1e1e2e"  # 回退 dark 默认
 
     def test_build_browser_css_contains_colors(self):
         theme = theme_mod.get_theme()
         css = theme_mod.build_browser_css(theme)
-        assert "#ffffff" in css  # 背景
-        assert "#1a1a1a" in css  # 文字
-        assert "#d8d8d8" in css  # 边框
+        assert "#1e1e2e" in css  # 背景(dark)
+        assert "#cdd6f4" in css  # 文字
+        assert "#45475a" in css  # 边框
         assert "Screen" in css
         assert ".sidebar" in css
         assert ".main-view" in css
@@ -181,18 +181,18 @@ class TestTheme:
     def test_build_file_browser_css_contains_colors(self):
         theme = theme_mod.get_theme()
         css = theme_mod.build_file_browser_css(theme)
-        assert "#ffffff" in css
+        assert "#1e1e2e" in css
         assert "#file-list" in css
         assert "#preview" in css
 
-    def test_browser_uses_light_theme(self):
-        """FastaBrowser 应使用浅色主题 (DARK=False)。"""
+    def test_browser_uses_dark_theme(self):
+        """FastaBrowser 应使用深色主题 (DARK=True)。"""
         from seqviz.browser import FastaBrowser
-        assert FastaBrowser.DARK is False
+        assert FastaBrowser.DARK is True
 
-    def test_file_browser_uses_light_theme(self):
+    def test_file_browser_uses_dark_theme(self):
         from seqviz.file_browser import FileBrowser
-        assert FileBrowser.DARK is False
+        assert FileBrowser.DARK is True
 
     def test_app_title_is_seqviz(self):
         from seqviz.browser import FastaBrowser

@@ -8,9 +8,10 @@ from pathlib import Path
 
 # 内置默认配置
 DEFAULT_CONFIG: dict = {
-    "theme": "light",               # 内置主题名: light/dark/nord/gruvbox/catppuccin/solarized/rose-pine/tokyo-night
+    "theme": "dark",               # 内置主题名: light/dark/nord/gruvbox/catppuccin/solarized/rose-pine/tokyo-night
     "browser": {
-        "wrap_width": 60,           # 每行碱基数
+        "wrap_width": 60,           # 每行碱基数（auto_wrap 关闭时生效）
+        "auto_wrap": True,          # 根据窗口宽度自动换行
         "scroll_step": 5,           # j/k 每次滚动行数
         "sidebar_width": 32,        # 侧栏宽度
         "show_line_numbers": True,  # 显示位置编号

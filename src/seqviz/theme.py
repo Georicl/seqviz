@@ -119,7 +119,7 @@ BUILTIN_THEMES: dict[str, dict] = {
 }
 
 # 默认主题名
-DEFAULT_THEME_NAME = "light"
+DEFAULT_THEME_NAME = "dark"
 
 # 暗色主题集合（用于自动设置 App.DARK）
 DARK_THEMES = {"dark", "nord", "gruvbox", "catppuccin", "solarized", "rose-pine", "tokyo-night"}

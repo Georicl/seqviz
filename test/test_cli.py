@@ -88,7 +88,7 @@ class TestConfigCommand:
         result = runner.invoke(app, ["config"])
         assert result.exit_code == 0
         assert "background" in result.output
-        assert "#ffffff" in result.output
+        assert "#1e1e2e" in result.output  # 默认 dark 主题背景
 
 
 class TestHelpCommand:
