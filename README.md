@@ -8,7 +8,7 @@
 
 [安装](#安装) · [快速开始](#快速开始) · [浏览器](#交互式浏览器) · [配置](#配置)
 
-<sup>当前版本 v0.4.0 · 需要 Python >= 3.14</sup>
+<sup>当前版本 v0.5.0 · 需要 Python >= 3.12</sup>
 
 </div>
 
@@ -28,10 +28,21 @@
 ## 安装
 
 ```bash
-git clone https://github.com/Georicl/seqviz.git
-cd seqviz
-uv sync                 # 安装依赖
-uv tool install .       # 安装为全局命令
+# 从 PyPI 安装（推荐）
+pipx install seqviz
+
+# 或 pip 安装
+pip install seqviz
+
+# 从源码安装
+git clone https://github.com/Georicl/seqviz.git && cd seqviz
+uv tool install .
+```
+
+安装后启用 shell 补全（可选）：
+
+```bash
+seqviz --install-completion zsh   # 或 bash
 ```
 
 开发模式：
@@ -161,14 +172,17 @@ seqviz config           # 查看当前生效配置与可用主题
 
 ## 性能
 
-基于大文件实测（Apple Silicon）：
+基于大文件实测（Apple Silicon · SMB 网络卷）：
 
 | 操作 | 数据规模 | 耗时 |
 |------|---------|------|
 | 扫描索引 | 10K 序列 (25MB) | ~7 ms |
 | 扫描索引 | 50K reads (30MB) | ~46 ms |
-| 加载序列 | 1M bp (seek 定位) | ~7 ms |
+| 扫描索引 | 1.3G pangenome (350 seqs) | ~1.3 s |
+| 加载序列 | 79Mbp chr1 (分块模式) | ~3 ms |
 | 滚动 | 超长序列浏览 | ~3.8 ms/次 |
+
+> **v0.5.0 性能优化**：懒长度扫描使索引提速 25-68x，分块加载使大序列（>1Mbp）加载提速 634x、内存降低 7917x。
 
 ## 开发
 
