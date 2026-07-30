@@ -178,8 +178,8 @@ def get_theme_name() -> str:
         name = config_mod.get("theme")
         if name and name in BUILTIN_THEMES:
             return name
-    except Exception:
-        pass
+    except (ImportError, KeyError):
+        pass  # 配置加载失败时使用默认主题
     return DEFAULT_THEME_NAME
 
 
@@ -233,7 +233,6 @@ def build_browser_css(theme: dict) -> str:
     panel = theme.get("panel", bg)
     muted = theme.get("muted", fg)
     highlight = theme.get("highlight", bg)
-    cursor = theme.get("cursor", accent)
     gutter = theme.get("gutter", panel)
     return f"""
     Screen {{

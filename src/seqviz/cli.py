@@ -1,16 +1,24 @@
-import typer
 from pathlib import Path
+
+import typer
 from rich.console import Console
-from seqviz.parsers import parse_fasta
-from seqviz.stats import calc_sequence_stats
-from seqviz.seq_type import SeqType, detect_seq_type
-from seqviz.fastq import parse_fastq
-from seqviz.browser import FastaBrowser
-from seqviz.file_browser import run_file_browser, scan_directory, is_sequence_file
+from rich.table import Table
+
 from seqviz import config as config_mod
 from seqviz import theme as theme_mod
-from seqviz.renderer import colorize_sequence, colorize_quality, quality_stats, quality_bar, position_ruler
-from rich.table import Table
+from seqviz.browser import FastaBrowser
+from seqviz.fastq import parse_fastq
+from seqviz.file_browser import run_file_browser, scan_directory
+from seqviz.parsers import parse_fasta
+from seqviz.renderer import (
+    colorize_quality,
+    colorize_sequence,
+    position_ruler,
+    quality_bar,
+    quality_stats,
+)
+from seqviz.seq_type import SeqType, detect_seq_type
+from seqviz.stats import calc_sequence_stats
 
 app = typer.Typer()
 console = Console()
@@ -92,15 +100,14 @@ def view(
             f"[dim]\\[{type_label}] {len(seq)}bp[/dim]"
         )
         
-        # 按 wrap 宽度切分，逐行显示标尺 + 序列
-        colored = colorize_sequence(seq, seq_type=seqtype)
+        # 按 wrap 宽度切分，逐行着色并输出（避免整条 Rich Text 的 span explosion）
         for chunk_start in range(0, len(seq), wrap):
             chunk_end = min(chunk_start + wrap, len(seq))
             ruler = position_ruler(chunk_start + 1, chunk_end - chunk_start)
-            console.print(f"  ", end="")
+            console.print("  ", end="")
             console.print(ruler)
-            console.print(f"  ", end="")
-            console.print(colored[chunk_start:chunk_end])
+            console.print("  ", end="")
+            console.print(colorize_sequence(seq[chunk_start:chunk_end], seq_type=seqtype))
         
         console.print()  # 序列间空行
 
@@ -162,14 +169,14 @@ def head(
             f"[bold cyan]> {header}[/bold cyan] "
             f"[dim]\\[{type_label}] {len(seq)}bp[/dim]"
         )
-        colored = colorize_sequence(seq, seq_type=seqtype)
+        # 按 chunk 着色，避免整条 span explosion
         for chunk_start in range(0, len(seq), wrap):
             chunk_end = min(chunk_start + wrap, len(seq))
             ruler = position_ruler(chunk_start + 1, chunk_end - chunk_start)
-            console.print(f"  ", end="")
+            console.print("  ", end="")
             console.print(ruler)
-            console.print(f"  ", end="")
-            console.print(colored[chunk_start:chunk_end])
+            console.print("  ", end="")
+            console.print(colorize_sequence(seq[chunk_start:chunk_end], seq_type=seqtype))
         console.print()
         count += 1
     
@@ -208,30 +215,25 @@ def fqview(
         
         # ── 质量分布条 ──
         bar = quality_bar(quality, width=wrap)
-        console.print(f"[dim]Q: [/dim]", end="")
+        console.print("[dim]Q: [/dim]", end="")
         console.print(bar)
         
-        # ── 序列 + 质量值逐行对齐显示 ──
-        colored_seq = colorize_sequence(seq, seq_type=seqtype)
-        colored_qual = colorize_quality(quality)
-        
+        # ── 序列 + 质量值逐行对齐显示（按 chunk 着色） ──
         for chunk_start in range(0, len(seq), wrap):
             chunk_end = min(chunk_start + wrap, len(seq))
             
             # 位置标尺
             ruler = position_ruler(chunk_start + 1, chunk_end - chunk_start)
-            console.print(f"  ", end="")
+            console.print("  ", end="")
             console.print(ruler)
             
-            # 序列行
-            seq_slice = colored_seq[chunk_start:chunk_end]
-            console.print(f"  ", end="")
-            console.print(seq_slice)
+            # 序列行（按 chunk 着色）
+            console.print("  ", end="")
+            console.print(colorize_sequence(seq[chunk_start:chunk_end], seq_type=seqtype))
             
             # 质量行（与序列等宽对齐）
-            qual_slice = colored_qual[chunk_start:chunk_end]
-            console.print(f"  ", end="")
-            console.print(qual_slice)
+            console.print("  ", end="")
+            console.print(colorize_quality(quality[chunk_start:chunk_end]))
             
             console.print()  # chunk 间小间距
         

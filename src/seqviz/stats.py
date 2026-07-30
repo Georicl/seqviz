@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+
 @dataclass
 class SequenceStats:
     header: str
@@ -13,10 +14,8 @@ class SequenceStats:
         return self.gc_count / self.length
 
 def calc_sequence_stats(seq: str) -> tuple[int, int]:
-    """返回 (length, gc_count)。一次遍历同时算两个值。"""
-    length = len(seq)
-    gc_count = 0
-    for base in seq.upper():
-        if base in ("G", "C"):
-            gc_count += 1
+    """返回 (length, gc_count)。使用 count 代替逐字符遍历。"""
+    upper_seq = seq.upper()
+    length = len(upper_seq)
+    gc_count = upper_seq.count("G") + upper_seq.count("C")
     return length, gc_count

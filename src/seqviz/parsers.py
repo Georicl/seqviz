@@ -1,7 +1,9 @@
-from pathlib import Path
 import gzip
+from collections.abc import Generator
+from pathlib import Path
 
-def parse_fasta(filepath: str | Path):
+
+def parse_fasta(filepath: str | Path) -> Generator[tuple[str, str], None, None]:
     """流式打开fasta 文件"""
 
     filepath = Path(filepath)

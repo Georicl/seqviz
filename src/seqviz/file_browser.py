@@ -1,20 +1,25 @@
 """目录序列文件浏览器：扫描目录中的序列文件，提供选择界面。"""
 
-from pathlib import Path
-from dataclasses import dataclass, field
 import gzip
+from dataclasses import dataclass
+from pathlib import Path
+from typing import ClassVar
 
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Header, Footer, Static, OptionList
-from textual.widgets.option_list import Option
 from textual.containers import Horizontal
-from rich.text import Text
+from textual.widgets import Footer, Header, OptionList, Static
+from textual.widgets.option_list import Option
 
-from seqviz.browser import FileFormat
 from seqviz import config
-from seqviz.theme import get_theme, build_file_browser_css, get_theme_name, is_dark_theme
-
+from seqviz.browser import FileFormat
+from seqviz.theme import (
+    build_file_browser_css,
+    get_theme,
+    get_theme_name,
+    is_dark_theme,
+)
 
 # 支持的序列文件后缀（从配置加载，可被用户 JSON 覆盖）
 SEQ_EXTENSIONS = set(config.get("file_browser.extensions", []))
@@ -44,7 +49,7 @@ def detect_file_format(path: Path) -> FileFormat:
         with opener(path, "rt") as f:
             first = f.read(1)
         return FileFormat.FASTQ if first == "@" else FileFormat.FASTA
-    except Exception:
+    except (OSError, UnicodeDecodeError):
         return FileFormat.FASTA
 
 
@@ -66,7 +71,7 @@ def count_sequences(path: Path, fmt: FileFormat) -> int:
                 for line in f:
                     if line.startswith(b">"):
                         count += 1
-    except Exception:
+    except OSError:
         count = 0
     return count
 
@@ -154,7 +159,7 @@ class FileBrowser(App):
 
     CSS = build_file_browser_css(get_theme())
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list] = [
         Binding("j", "cursor_down", "下移", show=True, priority=True),
         Binding("k", "cursor_up", "上移", show=True, priority=True),
         Binding("space", "toggle_select", "多选", show=True, priority=True),

@@ -1,6 +1,7 @@
 from rich.text import Text
-from seqviz.seq_type import SeqType, detect_seq_type
+
 from seqviz import config
+from seqviz.seq_type import SeqType, detect_seq_type
 
 # DNA 碱基配色方案（从配置加载，可被用户 JSON 覆盖）
 DNA_COLORS = dict(config.get("colors.dna", {}))

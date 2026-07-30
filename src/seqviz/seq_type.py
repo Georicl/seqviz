@@ -1,5 +1,6 @@
 from enum import Enum
 
+
 class SeqType(Enum):
     DNA = "dna"
     PROTEIN = "protein"

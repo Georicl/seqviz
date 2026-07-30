@@ -1,8 +1,9 @@
-from pathlib import Path
 import gzip
+from collections.abc import Generator
+from pathlib import Path
 
 
-def parse_fastq(filepath: str | Path):
+def parse_fastq(filepath: str | Path) -> Generator[tuple[str, str, str], None, None]:
     """
     流式解析 FASTQ 文件。
     逐条 yield (header, sequence, quality)。
@@ -18,7 +19,7 @@ def parse_fastq(filepath: str | Path):
             
             header_line = header_line.rstrip("\n")
             seq = f.readline().rstrip("\n")
-            plus = f.readline()  # "+" 分隔符，跳过
+            f.readline()  # "+" 分隔符，跳过
             quality = f.readline().rstrip("\n")
             
             if not header_line.startswith("@"):
