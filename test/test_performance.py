@@ -3,7 +3,6 @@
 import asyncio
 import random
 import time
-from pathlib import Path
 
 import pytest
 
@@ -47,9 +46,21 @@ def long_fasta(tmp_path_factory):
         for i in range(3):
             seq = "".join(random.choices(BASES, k=500_000))
             f.write(f">long_{i}\n")
-            for j in range(0, len(seq), 70):
-                f.write(seq[j:j + 70] + "\n")
+            f.writelines(seq[j:j + 70] + "\n" for j in range(0, len(seq), 70))
     return p
+
+
+@pytest.fixture(scope="module")
+def huge_fasta(tmp_path_factory):
+    """生成 1 条 2,000,004bp 的超大序列 FASTA（>1Mbp 阈值，走分块加载）。"""
+    d = tmp_path_factory.mktemp("perf_huge")
+    p = d / "huge.fa"
+    seq = "".join(random.choices(BASES, k=2_000_004))
+    with open(p, "w") as f:
+        f.write(">huge\n")
+        f.writelines(seq[j:j + 70] + "\n" for j in range(0, len(seq), 70))
+    # 返回 (路径, 序列)，供内容断言
+    return p, seq
 
 
 class TestScanPerformance:
@@ -134,4 +145,50 @@ class TestScrollPerformance:
                 mv.view_offset = 0
                 mv.scroll_content_up(5)  # 已在顶部，offset 应保持 0
                 assert mv.view_offset == 0
+        asyncio.run(_t())
+
+
+class TestHugeSequenceCorrectness:
+    """>1Mbp 大序列分块加载的性能与内容正确性（benchmark correctness gate）。"""
+
+    def test_huge_load_and_content(self, huge_fasta):
+        """加载 2Mbp 序列：长度准确，首/中/末窗口内容与原序列一致。"""
+        path, seq = huge_fasta
+
+        async def _t():
+            app = FastaBrowser([path])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                mv = app.query_one("#main-0")
+                tab = app.current_tab
+                t0 = time.perf_counter()
+                mv.load_sequence(tab.sequences[0])
+                elapsed = (time.perf_counter() - t0) * 1000
+                # 性能：2Mbp 加载（含一次全长扫描）应在合理时间内完成
+                assert elapsed < 1000, f"加载 2Mbp 耗时 {elapsed:.0f}ms，超过 1000ms"
+                # 正确性：进入分块模式且长度准确
+                assert mv._is_large
+                assert mv._seq_length == len(seq)
+                # 内容：首/中/末/随机窗口抽查
+                for start in (0, len(seq) // 2, len(seq) - 600, random.randint(0, len(seq) - 600)):
+                    assert mv._load_chunk(start, start + 600) == seq[start:start + 600]
+        asyncio.run(_t())
+
+    def test_huge_scroll_content_correct(self, huge_fasta):
+        """滚动大序列时，渲染的每个可见窗口内容都与原序列一致。"""
+        path, seq = huge_fasta
+
+        async def _t():
+            app = FastaBrowser([path])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                mv = app.query_one("#main-0")
+                # 滚动到中部，抽查渲染行内容
+                mv.view_offset = len(mv._header_lines) + (len(seq) // 2) // mv.WRAP
+                mv._update_display()
+                # 验证中部几个 wrap 窗口的碱基与原序列一致
+                mid = len(seq) // 2
+                for off in (0, mv.WRAP, 2 * mv.WRAP):
+                    got = mv._load_chunk(mid + off, mid + off + mv.WRAP)
+                    assert got == seq[mid + off:mid + off + mv.WRAP]
         asyncio.run(_t())

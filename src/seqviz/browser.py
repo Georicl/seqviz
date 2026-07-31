@@ -48,8 +48,22 @@ class FileFormat(Enum):
 
 
 class SequenceInfo:
-    """存储一条序列的元信息（不加载序列本身）。"""
-    __slots__ = ("has_quality", "header", "index", "length", "offset")
+    """存储一条序列的元信息（不加载序列本身）。
+
+    uniform / chars_per_line / file_line_width / checkpoints 为大序列分块加载
+    指标缓存，首次加载时懒填充，避免重复全量扫描。
+    """
+    __slots__ = (
+        "chars_per_line",
+        "checkpoints",
+        "file_line_width",
+        "has_quality",
+        "header",
+        "index",
+        "length",
+        "offset",
+        "uniform",
+    )
 
     def __init__(self, index: int, header: str, offset: int, length: int = -1, has_quality: bool = False):
         self.index = index
@@ -57,6 +71,10 @@ class SequenceInfo:
         self.offset = offset        # 文件中的字节偏移量（用于快速定位）
         self.length = length        # -1 表示未知（懒计算）
         self.has_quality = has_quality  # FASTQ 记录有质量值
+        self.uniform = None         # None=未知；True/False=行宽是否恒定（仅大序列使用）
+        self.chars_per_line = 0     # 每行碱基数（行宽恒定时有效）
+        self.file_line_width = 0    # 每行字节数（含换行符，行宽恒定时有效）
+        self.checkpoints = None     # [(碱基位置, 文件偏移)]，仅非等宽大序列使用
 
 
 def _iter_sequences(filepath: Path, fmt: FileFormat, start_idx: int = 0) -> Generator[SequenceInfo, None, None]:
@@ -100,11 +118,15 @@ def _iter_sequences(filepath: Path, fmt: FileFormat, start_idx: int = 0) -> Gene
 
 
 class SequenceList(OptionList):
-    """左侧序列列表（基于 OptionList，内部虚拟化，支持大量序列）。"""
+    """左侧序列列表（基于 OptionList，内部虚拟化，支持大量序列）。
+
+    注意：本组件不持有序列数据，仅负责渲染 Option。
+    序列数据的唯一权威来源是 FileTab.sequences，由 FastaBrowser 统一追加，
+    避免侧栏与标签页各持一份 list 导致重复追加/索引错位。
+    """
 
     def __init__(self, sequences: list[SequenceInfo], **kwargs):
         super().__init__(**kwargs)
-        self.sequences = sequences
         for seq in sequences:
             self.add_option(Option(self._make_label(seq), id=f"seq-{seq.index}"))
 
@@ -122,9 +144,11 @@ class SequenceList(OptionList):
         return f" {label}  {size_str}bp"
 
     def append_sequences(self, new_seqs: list[SequenceInfo]):
-        """追加新扫描到的序列（后台扫描用）。"""
+        """为新扫描到的序列追加 Option（后台扫描用）。
+
+        只加 Option，不追加数据 list——数据由 FileTab.sequences 统一持有。
+        """
         for seq in new_seqs:
-            self.sequences.append(seq)
             self.add_option(Option(self._make_label(seq), id=f"seq-{seq.index}"))
 
 
@@ -133,6 +157,8 @@ class SequenceView(Static):
 
     # 超过此阈值的 FASTA 序列使用分块加载（1Mbp）
     LARGE_SEQ_THRESHOLD = 1_000_000
+    # 非等宽行宽大序列的 checkpoint 间隔（每 1Mbp 记录一个文件偏移，用于快速定位）
+    CHECKPOINT_INTERVAL = 1_000_000
 
     def __init__(self, filepath: Path, file_format: FileFormat = FileFormat.FASTA, **kwargs):
         super().__init__(**kwargs)
@@ -159,9 +185,10 @@ class SequenceView(Static):
         self._file_line_width: int = 80  # FASTA 文件每行字节数（含换行符）
         self._chars_per_line: int = 79   # 每行实际碱基数（去除换行符）
         self._seq_length: int = 0        # 序列总长度
+        self._uniform_lines: bool = True  # 行宽是否恒定（可变行宽需走 checkpoint 回退）
+        self._checkpoints: list[tuple[int, int]] | None = None  # [(碱基位置, 文件偏移)] 仅非等宽时用
         # 持久文件句柄（避免频繁 open/close）
         self._fh: IO | None = None
-        self._is_gzip: bool = filepath.suffix.lower() == ".gz"
 
     def _get_fh(self) -> IO:
         """获取持久文件句柄（懒初始化）。"""
@@ -176,7 +203,11 @@ class SequenceView(Static):
             self._fh = None
 
     def load_sequence(self, seq_info: SequenceInfo):
-        """用 offset 直接 seek 到目标位置，O(1) 定位。大序列分块加载。"""
+        """用 offset 直接 seek 到目标位置。大序列分块加载。
+
+        未压缩文件为 O(1) 定位；gzip 文件无块索引，seek 需解压中间数据，
+        随机跳转为 O(文件大小)，仅适合顺序浏览。
+        """
         self.current_seq = seq_info
         self.view_offset = 0
         self._quality = ""
@@ -200,44 +231,60 @@ class SequenceView(Static):
             # FASTA: 二进制模式读取
             f.readline()  # 跳过 >header
             seq_data_start = f.tell()
-            first_seq_line = f.readline()
-            file_line_len = len(first_seq_line)  # 字节数（含 \n 或 \r\n）
-            # 计算每行实际碱基数（去除 \n 或 \r\n）
-            actual_chars = len(first_seq_line.rstrip(b"\r\n"))
 
-            # 估算序列长度
+            # 估算序列长度（-1 表示未知）
             est_length = seq_info.length if seq_info.length >= 0 else -1
+            is_large = est_length > self.LARGE_SEQ_THRESHOLD
 
-            # 读取序列：先尝试全量读取（最多读到阈值），超过则切换分块模式
-            f.seek(seq_data_start)
+            # 读取序列：
+            # - 已知大序列（缓存过长度）：只读 10K 样本用于类型检测，避免整条读入内存；
+            # - 未知/小序列：读到阈值或 EOF，以判定是否为大序列（小序列需全量保留）。
             seq_parts: list[str] = []
             total_read = 0
-            is_large = False
-            while True:
-                raw_line = f.readline()
-                if not raw_line or raw_line.startswith(b">"):
-                    break
-                stripped = raw_line.strip().decode()
-                seq_parts.append(stripped)
-                total_read += len(stripped)
-                if est_length < 0 and total_read > self.LARGE_SEQ_THRESHOLD:
-                    # 超过阈值，切换为分块模式
-                    is_large = True
-                    break
+            if is_large:
+                while total_read < 10_000:
+                    raw_line = f.readline()
+                    if not raw_line or raw_line.startswith(b">"):
+                        break
+                    stripped = raw_line.strip().decode()
+                    seq_parts.append(stripped)
+                    total_read += len(stripped)
+            else:
+                while True:
+                    raw_line = f.readline()
+                    if not raw_line or raw_line.startswith(b">"):
+                        break
+                    stripped = raw_line.strip().decode()
+                    seq_parts.append(stripped)
+                    total_read += len(stripped)
+                    if total_read > self.LARGE_SEQ_THRESHOLD:
+                        is_large = True  # 首次发现超过阈值
+                        break
 
-            if is_large or (est_length > self.LARGE_SEQ_THRESHOLD):
+            if is_large:
                 # ── 大序列：分块加载模式 ──
                 self._is_large = True
                 self._seq_data_offset = seq_data_start
-                self._file_line_width = file_line_len
-                self._chars_per_line = actual_chars
-                # Issue #1 修复：计算准确长度（扫描到下一个 > 或 EOF）
-                if est_length > 0:
-                    self._seq_length = est_length
+                # 获取分块指标（长度/行宽均匀性/行宽/checkpoint）：优先用缓存，否则扫描
+                if est_length > 0 and seq_info.uniform is not None:
+                    self._seq_length = seq_info.length
+                    self._uniform_lines = seq_info.uniform
+                    self._chars_per_line = seq_info.chars_per_line
+                    self._file_line_width = seq_info.file_line_width
+                    self._checkpoints = seq_info.checkpoints
                 else:
-                    # 先回到序列数据开头，再扫描全长
                     f.seek(seq_data_start)
-                    self._seq_length = self._calc_fasta_length(f, seq_data_start)
+                    (self._seq_length, self._uniform_lines,
+                     self._chars_per_line, self._file_line_width,
+                     checkpoints) = self._scan_fasta_metrics(f, seq_data_start)
+                    # 非等宽行宽需要 checkpoint 索引才能正确定位
+                    self._checkpoints = checkpoints if not self._uniform_lines else None
+                    # 回写缓存，避免同一记录重复全量扫描
+                    seq_info.length = self._seq_length
+                    seq_info.uniform = self._uniform_lines
+                    seq_info.chars_per_line = self._chars_per_line
+                    seq_info.file_line_width = self._file_line_width
+                    seq_info.checkpoints = self._checkpoints
                 # 只保留前 10K 用于类型检测
                 self._seq = "".join(seq_parts)[:10000]
                 self._lines_per_chunk = 1
@@ -306,48 +353,115 @@ class SequenceView(Static):
         self._update_display()
 
     @staticmethod
-    def _calc_fasta_length(f: IO, seq_data_start: int) -> int:
-        """计算 FASTA 序列的准确长度（二进制模式，读到下一个 > 或 EOF）。"""
+    def _scan_fasta_metrics(f: IO, seq_data_start: int) -> tuple[int, bool, int, int, list[tuple[int, int]]]:
+        """一次遍历扫描 FASTA 记录，返回分块加载所需的全部指标。
+
+        Returns:
+            (length, uniform, chars_per_line, file_line_width, checkpoints)
+            - length: 序列准确总长（碱基数）
+            - uniform: 所有序列行（除可能的末行短尾外）是否行宽恒定
+            - chars_per_line: 首行碱基数（uniform 时用于等宽换算）
+            - file_line_width: 首行字节数（含换行符，uniform 时用于等宽换算）
+            - checkpoints: [(碱基位置, 文件偏移)]，每 CHECKPOINT_INTERVAL 一个，
+              供非等宽行宽记录快速定位（uniform 时不使用）。
+
+        uniform 判定宽容“末行短尾”（FASTA 最后一行不足行宽是合法的），
+        但不宽容中间行宽变化或空行——这些会导致等宽 offset 换算错位。
+        """
         length = 0
+        first_chars = -1
+        first_bytes = -1
+        pending_mismatch = False  # 上一行与首行不同（可能只是末行短尾，待下一行确认）
+        nonuniform = False
+        checkpoints: list[tuple[int, int]] = []
+        next_checkpoint = 0
+        cur_offset = seq_data_start
         while True:
+            line_offset = cur_offset
             raw_line = f.readline()
             if not raw_line or raw_line.startswith(b">"):
                 break
-            length += len(raw_line.strip())
+            stripped_len = len(raw_line.strip())
+            line_bytes = len(raw_line)
+            # 跨越碱基边界时记录 checkpoint（用于非等宽记录的分段定位）
+            if length >= next_checkpoint:
+                checkpoints.append((length, line_offset))
+                next_checkpoint += SequenceView.CHECKPOINT_INTERVAL
+            length += stripped_len
+            cur_offset += line_bytes
+            # 若上一行不匹配且其后还有行，则确认非等宽
+            if pending_mismatch:
+                nonuniform = True
+                pending_mismatch = False
+            if not nonuniform:
+                if first_chars < 0:
+                    first_chars, first_bytes = stripped_len, line_bytes
+                elif stripped_len != first_chars or line_bytes != first_bytes:
+                    pending_mismatch = True  # 暂记，若为末行则不算非等宽
         f.seek(seq_data_start)  # 回到序列数据开头
-        return length
+        return length, (not nonuniform), first_chars, first_bytes, checkpoints
 
     def _load_chunk(self, seq_start: int, seq_end: int) -> str:
-        """P1: 从文件加载序列的 [seq_start, seq_end) 区间（大序列用）。"""
+        """P1: 从文件加载序列的 [seq_start, seq_end) 区间（大序列用）。
+
+        行宽恒定时用等宽换算直接 seek（O(1)）；
+        行宽可变时借助 checkpoint 索引定位到最近边界后顺序读取（正确但较慢）。
+        """
         if not self._is_large:
             return self._seq[seq_start:seq_end]
 
-        # 使用精确的每行碱基数和字节数计算文件偏移
-        chars_per_line = self._chars_per_line
-        line_bytes = self._file_line_width
-
-        if chars_per_line <= 0:
-            chars_per_line = 80
-        if line_bytes <= 0:
-            line_bytes = chars_per_line + 1
-
-        start_line = seq_start // chars_per_line
-        start_col = seq_start % chars_per_line
-        file_offset = self._seq_data_offset + start_line * line_bytes + start_col
-
         needed = seq_end - seq_start
+        f = self._get_fh()
+
+        if self._uniform_lines:
+            # ── 等宽行宽：直接换算文件偏移 ──
+            chars_per_line = self._chars_per_line
+            line_bytes = self._file_line_width
+            if chars_per_line <= 0:
+                chars_per_line = 80
+            if line_bytes <= 0:
+                line_bytes = chars_per_line + 1
+            start_line = seq_start // chars_per_line
+            start_col = seq_start % chars_per_line
+            file_offset = self._seq_data_offset + start_line * line_bytes + start_col
+            f.seek(file_offset)
+            skip = 0
+        else:
+            # ── 可变行宽：定位到不超过 seq_start 的最近 checkpoint ──
+            checkpoints = self._checkpoints or [(0, self._seq_data_offset)]
+            # 二分查找最大的 base_pos <= seq_start
+            lo, hi = 0, len(checkpoints) - 1
+            idx = 0
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                if checkpoints[mid][0] <= seq_start:
+                    idx = mid
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+            base_pos, file_offset = checkpoints[idx]
+            f.seek(file_offset)
+            skip = seq_start - base_pos  # 需跳过的碱基数
+
         result: list[str] = []
         total = 0
-        f = self._get_fh()
-        f.seek(file_offset)
         while total < needed:
             raw_line = f.readline()
             if not raw_line or raw_line.startswith(b">"):
                 break
             decoded = raw_line.strip().decode()
-            result.append(decoded)
-            total += len(decoded)
-        return "".join(result)[:needed]
+            if not decoded:
+                continue  # 跳过空行
+            if skip > 0:
+                if len(decoded) <= skip:
+                    skip -= len(decoded)
+                    continue
+                decoded = decoded[skip:]
+                skip = 0
+            take = needed - total
+            result.append(decoded[:take])
+            total += len(decoded[:take])
+        return "".join(result)
 
     def _make_prefix(self, pos: int | None) -> Text:
         """生成行前缀（位置编号，可配置关闭）。"""
@@ -650,32 +764,44 @@ class FastaBrowser(App):
         self._load_current()
         # 显式设置焦点到侧栏，确保 Footer 显示完整快捷键
         self._get_sidebar().focus()
-        # 后台继续扫描剩余序列
+        # 后台继续扫描剩余序列（线程 worker，不阻塞事件循环）
         if self._scan_tasks:
-            self.run_worker(self._background_scan(), exclusive=False)
+            self.run_worker(self._background_scan, thread=True, exclusive=False)
 
-    async def _background_scan(self):
-        """后台扫描剩余序列，每批 200 条更新一次侧栏。"""
+    def on_unmount(self):
+        """应用退出时关闭所有持久文件句柄，避免文件描述符泄露。"""
+        for view in self.query(SequenceView):
+            view.close()
+
+    def _background_scan(self):
+        """后台扫描剩余序列（在独立线程中运行，避免阻塞 Textual 事件循环）。
+
+        文件循环是同步 I/O，若直接跑在事件循环上会造成 UI 冻结；
+        因此放入 thread worker，每批通过 call_from_thread 回 UI 线程更新。
+        """
         BATCH = 200
         for fp, fmt, start_idx in self._scan_tasks:
             tab_idx = next(i for i, t in enumerate(self.file_tabs) if t.filepath == fp)
-            tab = self.file_tabs[tab_idx]
             batch: list[SequenceInfo] = []
 
             for seq_info in _iter_sequences(fp, fmt, start_idx=start_idx):
-                tab.sequences.append(seq_info)
                 batch.append(seq_info)
                 if len(batch) >= BATCH:
-                    self._update_sidebar(tab_idx, batch)
+                    self.call_from_thread(self._apply_scan_batch, tab_idx, batch)
                     batch = []
 
             if batch:
-                self._update_sidebar(tab_idx, batch)
+                self.call_from_thread(self._apply_scan_batch, tab_idx, batch)
 
         self._scan_tasks.clear()
 
-    def _update_sidebar(self, tab_idx: int, new_seqs: list[SequenceInfo]):
-        """更新侧栏（从 worker 回调到 UI 线程）。"""
+    def _apply_scan_batch(self, tab_idx: int, new_seqs: list[SequenceInfo]):
+        """在 UI 线程追加一批扫描结果（数据追加的唯一入口，避免重复）。
+
+        先写入 FileTab.sequences（唯一数据源），再为侧栏补充 Option。
+        """
+        tab = self.file_tabs[tab_idx]
+        tab.sequences.extend(new_seqs)
         try:
             sidebar = self.query_one(f"#sidebar-{tab_idx}", SequenceList)
             sidebar.append_sequences(new_seqs)
@@ -943,31 +1069,30 @@ class FastaBrowser(App):
         else:
             self.notify("剪贴板不可用", title="范围复制", severity="warning")
 
-    def _build_seq_text(self) -> str:
-        """构建当前序列的纯文本（FASTA/FASTQ 格式）。小序列用，大序列用流式导出。"""
+    def _iter_seq_text(self) -> Generator[str, None, None]:
+        """流式生成当前序列的纯文本（FASTA/FASTQ 格式），逐块 yield，内存恒定。
+
+        大序列不会一次性拼接整条字符串，导出时边生成边写入。
+        """
         tab = self.current_tab
         main_view = self._get_main_view()
         seq_info = tab.sequences[tab.current_index]
         if tab.file_format == FileFormat.FASTQ:
-            return f"@{seq_info.header}\n{main_view._seq}\n+\n{main_view._quality}\n"
+            yield f"@{seq_info.header}\n{main_view._seq}\n+\n{main_view._quality}\n"
+            return
+
+        yield f">{seq_info.header}\n"
+        if not main_view._is_large:
+            seq = main_view._seq
+            for i in range(0, len(seq), 60):
+                yield seq[i:i + 60] + "\n"
         else:
-            if not main_view._is_large:
-                # 普通序列：直接构建
-                lines = [f">{seq_info.header}"]
-                seq = main_view._seq
-                for i in range(0, len(seq), 60):
-                    lines.append(seq[i:i + 60])
-                return "\n".join(lines) + "\n"
-            else:
-                # 大序列：分块构建（避免一次性加载全部）
-                lines = [f">{seq_info.header}"]
-                seq_len = main_view._seq_length
-                CHUNK = 6000  # 每次加载 6000bp
-                for i in range(0, seq_len, CHUNK):
-                    chunk = main_view._load_chunk(i, min(i + CHUNK, seq_len))
-                    for j in range(0, len(chunk), 60):
-                        lines.append(chunk[j:j + 60])
-                return "\n".join(lines) + "\n"
+            seq_len = main_view._seq_length
+            CHUNK = 6000  # 每次加载 6000bp
+            for i in range(0, seq_len, CHUNK):
+                chunk = main_view._load_chunk(i, min(i + CHUNK, seq_len))
+                for j in range(0, len(chunk), 60):
+                    yield chunk[j:j + 60] + "\n"
 
     def action_export_seq(self):
         tab = self.current_tab
@@ -977,14 +1102,20 @@ class FastaBrowser(App):
         ext = ".fastq" if tab.file_format == FileFormat.FASTQ else ".fasta"
         out_path = Path(f"{seq_id}{ext}")
 
+        # 流式写入：边生成边写，内存占用与序列总长无关
         with open(out_path, "w") as f:
-            f.write(self._build_seq_text())
+            f.writelines(self._iter_seq_text())
 
         self.notify(f"已导出: {out_path}", title="导出")
 
     def action_copy_seq(self):
-        """复制当前序列到系统剪贴板。"""
-        text = self._build_seq_text()
+        """复制当前序列到系统剪贴板。超大序列建议改用 e 导出。"""
+        main_view = self._get_main_view()
+        # 剪贴板需要完整字符串；超大序列（>10Mbp）拼接开销大，提示改用导出
+        if main_view._is_large and main_view._seq_length > 10_000_000:
+            self.notify("序列过长，复制占用内存高，建议按 e 导出到文件", title="复制", severity="warning")
+            return
+        text = "".join(self._iter_seq_text())
         if self._copy_to_clipboard(text):
             self.notify(f"已复制 {len(text)} 字符到剪贴板", title="复制")
         else:
