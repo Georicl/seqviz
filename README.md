@@ -8,7 +8,7 @@
 
 [安装](#安装) · [快速开始](#快速开始) · [浏览器](#交互式浏览器) · [配置](#配置)
 
-<sup>当前版本 v0.5.0 · 需要 Python >= 3.12</sup>
+<sup>当前版本 v0.6.1 · 需要 Python >= 3.12</sup>
 
 </div>
 
@@ -182,6 +182,8 @@ seqviz config           # 查看当前生效配置与可用主题
 | 加载序列 | 79Mbp chr1 (分块模式) | ~3 ms |
 | 滚动 | 超长序列浏览 | ~3.8 ms/次 |
 
+> **v0.6.1 正确性与性能修复**：修复后台扫描重复追加导致的侧栏点选错位；修复可变行宽/含空行 FASTA 分块读取错位（checkpoint 索引回退）；后台扫描移入线程不再冻结 UI（p95 延迟 1445ms→71ms）；大序列指标缓存 + 流式导出；测试套件扩充至 160 项。
+>
 > **v0.5.0 性能优化**：懒长度扫描使索引提速 25-68x，分块加载使大序列（>1Mbp）加载提速 634x、内存降低 7917x。
 
 ## 开发
@@ -189,7 +191,7 @@ seqviz config           # 查看当前生效配置与可用主题
 ```bash
 git clone https://github.com/Georicl/seqviz.git && cd seqviz
 uv sync
-uv run pytest test/ -v          # 147 个测试
+uv run pytest test/ -v          # 160 个测试
 ```
 
 ## License
