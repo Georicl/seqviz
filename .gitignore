@@ -9,6 +9,12 @@ wheels/
 # Virtual environments
 .venv
 
+# Test/coverage artifacts
+.coverage
+.test_shots/
+.pytest_cache/
+.ruff_cache/
+
 # Test data (large sequence files) — 保留测试代码，忽略数据文件
 test/*.fa
 test/*.fasta
@@ -22,3 +28,7 @@ test/*.gz
 test/*.codingseq
 test/__pycache__/
 .qoder/
+
+# 未入库的测试样本/临时文件
+test/sample.vcf
+test/Weixin*

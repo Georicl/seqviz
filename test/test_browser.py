@@ -263,3 +263,203 @@ class TestProteinDetection:
                 from seqviz.seq_type import SeqType
                 assert mv._seq_type == SeqType.PROTEIN
         run(_t())
+
+
+# ──────────────────────────────────────────────
+# 审查补强：翻页/顶底、Tab 切换、范围复制、空文件安全
+# ──────────────────────────────────────────────
+class TestNavigationExtras:
+    def test_goto_bottom_and_top(self):
+        async def _t():
+            app = FastaBrowser([TEST_DIR / "chr2.fa"])
+            async with app.run_test(size=(100, 20)) as pilot:
+                await pilot.pause()
+                mv = app.query_one("#main-0")
+                await pilot.press("G")  # 跳到底部
+                await pilot.pause()
+                assert mv.view_offset == max(0, mv._total_lines - 1)
+                await pilot.press("g")  # 跳到顶部
+                await pilot.pause()
+                assert mv.view_offset == 0
+        run(_t())
+
+    def test_page_down_up(self):
+        async def _t():
+            app = FastaBrowser([TEST_DIR / "chr2.fa"])
+            async with app.run_test(size=(100, 20)) as pilot:
+                await pilot.pause()
+                mv = app.query_one("#main-0")
+                initial = mv.view_offset
+                await pilot.press("space")  # 向下翻页
+                await pilot.pause()
+                assert mv.view_offset > initial
+                await pilot.press("b")  # 向上翻页
+                await pilot.pause()
+                assert mv.view_offset == initial
+        run(_t())
+
+
+class TestTabSwitch:
+    def test_tab_switches_active_tab(self):
+        async def _t():
+            app = FastaBrowser([TEST_FA, TEST_FASTQ])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                assert app.active_tab == 0
+                await pilot.press("tab")  # 切到下一个标签页
+                await pilot.pause()
+                assert app.active_tab == 1
+                await pilot.press("tab")  # 循环回第一个
+                await pilot.pause()
+                assert app.active_tab == 0
+        run(_t())
+
+
+class TestRangeCopy:
+    def test_range_copy_success(self, monkeypatch):
+        async def _t():
+            copied: list[str] = []
+            monkeypatch.setattr(FastaBrowser, "_copy_to_clipboard", lambda self, text: copied.append(text) or True)
+            app = FastaBrowser([TEST_FA])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                expected = app._get_main_view()._seq[0:4]
+                await pilot.press("c")
+                for ch in "1-4":
+                    await pilot.press(ch)
+                await pilot.press("enter")
+                await pilot.pause()
+            assert copied == [expected]
+        run(_t())
+
+    def test_range_copy_out_of_bounds(self, monkeypatch):
+        async def _t():
+            copied: list[str] = []
+            monkeypatch.setattr(FastaBrowser, "_copy_to_clipboard", lambda self, text: copied.append(text) or True)
+            app = FastaBrowser([TEST_FA])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                await pilot.press("c")
+                for ch in "999-9999":
+                    await pilot.press(ch)
+                await pilot.press("enter")
+                await pilot.pause()
+            assert copied == []  # 越界不复制
+        run(_t())
+
+    def test_range_copy_invalid_format(self, monkeypatch):
+        async def _t():
+            copied: list[str] = []
+            monkeypatch.setattr(FastaBrowser, "_copy_to_clipboard", lambda self, text: copied.append(text) or True)
+            app = FastaBrowser([TEST_FA])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                await pilot.press("c")
+                for ch in "abc":
+                    await pilot.press(ch)
+                await pilot.press("enter")
+                await pilot.pause()
+            assert copied == []  # 非法格式不复制
+        run(_t())
+
+
+class TestEmptyFileSafety:
+    def test_export_copy_empty_file_no_crash(self, tmp_path, monkeypatch):
+        """空文件按 e/y 应友好提示而非 IndexError 崩溃。"""
+        p = tmp_path / "empty.fa"
+        p.write_text("")
+
+        async def _t():
+            monkeypatch.chdir(tmp_path)
+            app = FastaBrowser([p])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                await pilot.press("e")  # 不应崩溃
+                await pilot.pause()
+                await pilot.press("y")  # 不应崩溃
+                await pilot.pause()
+            assert list(tmp_path.glob("*.fasta")) == []  # 无序列可导出
+        run(_t())
+
+
+class TestStatusBarLayout:
+    def test_statusbar_visible_above_footer(self):
+        """状态栏应可见且位于 Footer 上方（回归：两者同 dock:bottom 重叠遮挡）。"""
+        async def _t():
+            app = FastaBrowser([TEST_FA])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                statusbar = app.query_one("#statusbar")
+                footer = app.query_one("Footer")
+                sb_region = statusbar.region
+                ft_region = footer.region
+                assert sb_region.height >= 1 and sb_region.width > 0
+                # 状态栏整体位于 Footer 上方，无重叠
+                assert sb_region.y + sb_region.height <= ft_region.y
+        run(_t())
+
+
+class TestHelpScreen:
+    def test_help_shows_all_keys(self):
+        """? 打开帮助面板，应包含全部已声明快捷键（含 y/c/B/Tab）。"""
+        from seqviz.browser import HelpScreen
+
+        async def _t():
+            app = FastaBrowser([TEST_FA])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                await pilot.press("question_mark")
+                for _ in range(20):  # 等待模态屏幕挂载就绪
+                    await pilot.pause()
+                    if isinstance(app.screen, HelpScreen):
+                        break
+                assert isinstance(app.screen, HelpScreen)
+                from textual.css.query import NoMatches
+                panel = None
+                for _ in range(20):  # 等待模态屏幕内面板挂载就绪
+                    await pilot.pause()
+                    try:
+                        panel = app.screen.query_one("#help-panel")
+                        break
+                    except NoMatches:
+                        continue
+                assert panel is not None
+                text = str(panel.render())
+                for key_desc in ("复制当前序列", "范围复制", "返回文件选择器", "切换文件标签页"):
+                    assert key_desc in text
+        run(_t())
+
+    def test_q_closes_help_not_exit(self):
+        """帮助面板打开时按 q 应关闭面板而非退出浏览器（回归用户报告的 bug）。"""
+        from seqviz.browser import HelpScreen
+
+        async def _t():
+            app = FastaBrowser([TEST_FA])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                await pilot.press("question_mark")
+                await pilot.pause()
+                assert isinstance(app.screen, HelpScreen)
+                await pilot.press("q")  # 应关闭帮助而非退出
+                await pilot.pause()
+                assert not isinstance(app.screen, HelpScreen)
+                app.query_one("#main-0")  # 应用仍在运行
+                await pilot.press("q")  # 再按才退出
+                await pilot.pause()
+        run(_t())
+
+    def test_tab_does_not_switch_while_help_open(self):
+        """帮助面板打开时按 Tab 不应在背后切换标签页。"""
+        from seqviz.browser import HelpScreen
+
+        async def _t():
+            app = FastaBrowser([TEST_FA, TEST_FASTQ])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                await pilot.press("question_mark")
+                await pilot.pause()
+                assert isinstance(app.screen, HelpScreen)
+                await pilot.press("tab")
+                await pilot.pause()
+                assert app.active_tab == 0  # 未切换
+        run(_t())

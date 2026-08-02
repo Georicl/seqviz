@@ -9,7 +9,7 @@ def parse_fastq(filepath: str | Path) -> Generator[tuple[str, str, str], None, N
     逐条 yield (header, sequence, quality)。
     """
     filepath = Path(filepath)
-    opener = gzip.open if filepath.suffix == ".gz" else open
+    opener = gzip.open if filepath.suffix.lower() == ".gz" else open
     
     with opener(filepath, "rt") as f:
         while True:

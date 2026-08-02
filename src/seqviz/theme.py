@@ -22,7 +22,6 @@ BUILTIN_THEMES: dict[str, dict] = {
         "panel": "#f4f4f4",
         "muted": "#8a8a8a",
         "highlight": "#e8f0fb",
-        "cursor": "#0066cc",
         "gutter": "#f0f0f0",
     },
 
@@ -35,7 +34,6 @@ BUILTIN_THEMES: dict[str, dict] = {
         "panel": "#181825",
         "muted": "#6c7086",
         "highlight": "#313244",
-        "cursor": "#89b4fa",
         "gutter": "#181825",
     },
 
@@ -48,7 +46,6 @@ BUILTIN_THEMES: dict[str, dict] = {
         "panel": "#272e3a",
         "muted": "#616e88",
         "highlight": "#3b4252",
-        "cursor": "#88c0d0",
         "gutter": "#272e3a",
     },
 
@@ -61,7 +58,6 @@ BUILTIN_THEMES: dict[str, dict] = {
         "panel": "#1d2021",
         "muted": "#928374",
         "highlight": "#3c3836",
-        "cursor": "#fabd2f",
         "gutter": "#1d2021",
     },
 
@@ -74,7 +70,6 @@ BUILTIN_THEMES: dict[str, dict] = {
         "panel": "#181825",
         "muted": "#6c7086",
         "highlight": "#313244",
-        "cursor": "#f5c2e7",
         "gutter": "#181825",
     },
 
@@ -87,7 +82,6 @@ BUILTIN_THEMES: dict[str, dict] = {
         "panel": "#073642",
         "muted": "#586e75",
         "highlight": "#073642",
-        "cursor": "#268bd2",
         "gutter": "#073642",
     },
 
@@ -100,7 +94,6 @@ BUILTIN_THEMES: dict[str, dict] = {
         "panel": "#1f1d2e",
         "muted": "#6e6a86",
         "highlight": "#26233a",
-        "cursor": "#ebbcba",
         "gutter": "#1f1d2e",
     },
 
@@ -113,7 +106,6 @@ BUILTIN_THEMES: dict[str, dict] = {
         "panel": "#16161e",
         "muted": "#565f89",
         "highlight": "#283457",
-        "cursor": "#7aa2f7",
         "gutter": "#16161e",
     },
 }
@@ -163,7 +155,11 @@ def load_theme(theme_name: str | None = None) -> dict:
             with open(THEME_FILE) as f:
                 user_theme = json.load(f)
             if isinstance(user_theme, dict):
-                user_colors = {k: v for k, v in user_theme.items() if k != "name"}
+                # 忽略 "name" 与 "_" 前缀的注释/模板键，仅合并真正的颜色字段
+                user_colors = {
+                    k: v for k, v in user_theme.items()
+                    if k != "name" and not (isinstance(k, str) and k.startswith("_"))
+                }
                 if user_colors:
                     theme = _deep_merge(theme, user_colors)
         except (json.JSONDecodeError, OSError):
@@ -211,12 +207,16 @@ def get_theme() -> dict:
 
 
 def reset_theme():
-    """重置主题单例（用于测试或主题切换后刷新）。"""
+    """重置主题单例（用于测试或主题切换后刷新）。
+
+    注意：FastaBrowser/FileBrowser 的 DARK/CSS 类属性在导入时从主题单例取值，
+    本函数不会改变已定义的应用类；切换主题后需创建新的应用实例（或重启进程）。
+    """
     global _theme
     _theme = None
 
 
-# 兼容旧代码：DEFAULT_THEME 指向 light
+# 兼容旧代码：DEFAULT_THEME 指向默认主题（dark）
 DEFAULT_THEME = BUILTIN_THEMES[DEFAULT_THEME_NAME]
 
 

@@ -80,3 +80,13 @@ def _test_fixtures():
     """会话级自动 fixture：确保测试数据文件存在。"""
     _ensure_fixtures()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_config_theme_singletons():
+    """每个测试后重置 config/theme 单例，避免缓存泄漏造成顺序敏感。"""
+    yield
+    from seqviz import config as config_mod
+    from seqviz import theme as theme_mod
+    config_mod._config = None
+    theme_mod._theme = None

@@ -94,19 +94,50 @@ class TestConfig:
         config_mod.reload_config()
         assert config_mod.get_config()["browser"]["wrap_width"] == 99
 
+    def test_load_config_wrong_type_falls_back(self, tmp_path, monkeypatch):
+        """用户配置类型错误时应回退默认值而非令消费方崩溃。"""
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "colors": {"dna": "red"},          # 应为 dict，误写为 str
+            "browser": {"wrap_width": "wide"},  # 应为 int，误写为 str
+        }))
+        monkeypatch.setattr(config_mod, "CONFIG_FILE", cfg_file)
+        config_mod._config = None
+        cfg = config_mod.get_config()
+        assert cfg["colors"]["dna"]["A"] == "green"  # dna 回退默认 dict
+        assert cfg["browser"]["wrap_width"] == 60      # wrap_width 回退默认 int
+
+    def test_load_config_lenient_conversions(self, tmp_path, monkeypatch):
+        """0/1 作 bool、整数值 float 应被安全转换而非静默回退/反转。"""
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "browser": {"auto_wrap": 0, "wrap_width": 80.0},
+            "colors": {"quality_thresholds": {"high": 25.0}},
+        }))
+        monkeypatch.setattr(config_mod, "CONFIG_FILE", cfg_file)
+        config_mod._config = None
+        cfg = config_mod.get_config()
+        assert cfg["browser"]["auto_wrap"] is False  # 0 → False，不反转
+        assert cfg["browser"]["wrap_width"] == 80    # 80.0 → 80，不丢弃
+        assert cfg["colors"]["quality_thresholds"]["high"] == 25
+
 
 # ──────────────────────────────────────────────
 # config 覆盖对渲染行为的实际影响
 # ──────────────────────────────────────────────
 class TestConfigAffectsBehavior:
     def test_dna_color_override_affects_colorize(self, tmp_path, monkeypatch):
-        """修改 config 的 dna 颜色后，colorize 应使用新颜色。"""
-        # renderer 在导入时读取 config，这里直接验证 config 值传递
+        """修改 config 的 dna 颜色后，colorize 应使用新颜色（消费时读取配置）。"""
+        from seqviz.renderer import colorize_sequence
+        from seqviz.seq_type import SeqType
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({"colors": {"dna": {"A": "cyan"}}}))
         monkeypatch.setattr(config_mod, "CONFIG_FILE", cfg_file)
         config_mod._config = None
         assert config_mod.get("colors.dna.A") == "cyan"
+        # 渲染路径消费时读取配置 → A 应着 cyan（验证 reload 契约生效）
+        result = colorize_sequence("A", SeqType.DNA)
+        assert str(result._spans[0].style) == "cyan"
 
     def test_quality_threshold_override(self, tmp_path, monkeypatch):
         cfg_file = tmp_path / "config.json"

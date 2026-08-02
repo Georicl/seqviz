@@ -8,8 +8,8 @@ def parse_fasta(filepath: str | Path) -> Generator[tuple[str, str], None, None]:
 
     filepath = Path(filepath)
 
-    # 选择打开格式, 如果是.gz结尾, 则使用gzip
-    opener = gzip.open if filepath.suffix == ".gz" else open
+    # 选择打开格式, 如果是.gz结尾, 则使用gzip（大小写不敏感，与 browser/file_browser 一致）
+    opener = gzip.open if filepath.suffix.lower() == ".gz" else open
 
     header = None
     seq_parts: list[str] = []

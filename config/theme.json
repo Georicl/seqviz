@@ -1,9 +1,5 @@
 {
-  "background": "#ffffff",
-  "foreground": "#1a1a1a",
-  "border": "#d8d8d8",
-  "accent": "#0066cc",
-  "panel": "#f4f4f4",
-  "muted": "#8a8a8a",
-  "highlight": "#e8f0fb"
+  "_comment": "主题覆盖模板：在此写入想覆盖的字段（对 config.json 中 theme 指定的内置主题生效）。可用字段: background/foreground/border/accent/panel/muted/highlight/gutter。仅写入想覆盖的字段，其余保持内置值；以 _ 开头的键为注释会被忽略。切换主题请修改 config.json 的 theme 字段。",
+  "_available_themes": ["light", "dark", "nord", "gruvbox", "catppuccin", "solarized", "rose-pine", "tokyo-night"],
+  "_example_accent": "#89b4fa"
 }

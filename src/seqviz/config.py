@@ -28,7 +28,7 @@ DEFAULT_CONFIG: dict = {
         "quality_thresholds": {
             "high": 30,     # Q >= high  -> 绿色
             "medium": 20,   # Q >= medium -> 黄色
-            "low": 10,      # Q >= low   -> 橙色, 否则红色
+            "low": 10,      # Q >= low   -> 亮红, 否则红色
         },
     },
     "file_browser": {
@@ -54,15 +54,54 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _coerce_types(default, value):
+    """递归类型校验：value 与 default 类型不符时回退 default（dict 逐键校验）。
+
+    防止用户配置写错类型（如 "dna": "red"）导致消费方（如 dict(...) ）在
+    导入期崩溃；用户新增的未知键原样保留。
+    """
+    if isinstance(default, dict):
+        if not isinstance(value, dict):
+            return _coerce_types(default, {})  # 整体类型不符 → 全部回退
+        result = {}
+        for k, dv in default.items():
+            result[k] = _coerce_types(dv, value[k]) if k in value else dv
+        # 保留用户新增键（不在默认 schema 中）
+        for k, v in value.items():
+            if k not in default:
+                result[k] = v
+        return result
+    if isinstance(default, bool):  # bool 须在 int 之前判断（bool 是 int 子类）
+        if isinstance(value, bool):
+            return value
+        # 宽容 0/1 写为 false/true 的常见写法，避免静默反转行为
+        return bool(value) if value in (0, 1) else default
+    if isinstance(default, int):
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, int):
+            return value
+        # 宽容整数值 float（如 80.0），避免静默丢弃
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        return default
+    if isinstance(default, str):
+        return value if isinstance(value, str) else default
+    if isinstance(default, list):
+        return value if isinstance(value, list) else list(default)
+    return value
+
+
 def load_config() -> dict:
-    """加载配置：内置默认值 <- 用户配置文件。配置无效时回退默认值。"""
+    """加载配置：内置默认值 <- 用户配置文件。配置无效（语法或类型）时回退默认值。"""
     config = DEFAULT_CONFIG
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE) as f:
                 user_config = json.load(f)
             if isinstance(user_config, dict):
-                config = _deep_merge(config, user_config)
+                merged = _deep_merge(DEFAULT_CONFIG, user_config)
+                config = _coerce_types(DEFAULT_CONFIG, merged)
         except (json.JSONDecodeError, OSError):
             pass  # 配置损坏时静默使用默认值
     return config

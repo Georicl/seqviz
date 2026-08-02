@@ -61,6 +61,13 @@ class TestParseFasta:
         records = list(parse_fasta(p))
         assert records == [("seq1", "ATCG")]
 
+    def test_gzip_uppercase_extension(self, tmp_path):
+        """大写 .GZ 后缀也应透明解压（后缀大小写不敏感）。"""
+        p = tmp_path / "seq.fa.GZ"
+        with gzip.open(p, "wt") as f:
+            f.write(">s\nAT\n")
+        assert list(parse_fasta(p)) == [("s", "AT")]
+
     def test_accepts_str_path(self, tmp_path):
         p = tmp_path / "seq.fa"
         p.write_text(">s\nAT\n")

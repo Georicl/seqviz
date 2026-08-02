@@ -164,6 +164,43 @@ class TestLargeSeqChunking:
         assert v._seq_length == len(seq)
         assert v._load_chunk(123_456, 123_516) == seq[123_456:123_516]
 
+    def test_last_line_longer_than_width(self, tmp_path):
+        """末行比首行更长：必须判非等宽走 checkpoint 回退，否则尾部静默错位。"""
+        seq = "".join(random.choices("ATCG", k=1_200_040))
+        p = tmp_path / "longtail.fa"
+        with p.open("w") as f:
+            f.write(">longtail\n")
+            # 前 19999 行每行 60bp（共 1,199,940），末行 100bp > 60bp
+            for i in range(0, 1_199_940, 60):
+                f.write(seq[i:i + 60] + "\n")
+            f.write(seq[1_199_940:] + "\n")
+
+        v, recs = _view(p, FileFormat.FASTA)
+        v.load_sequence(recs[0])
+        assert v._is_large
+        assert v._seq_length == len(seq)
+        assert v._uniform_lines is False  # 修复前误判为 True，尾部内容错位
+        for start in (0, 600_000, 1_199_940, 1_200_000, len(seq) - 600):
+            end = min(start + 600, len(seq))
+            assert v._load_chunk(start, end) == seq[start:end]
+
+    def test_leading_whitespace_not_uniform(self, tmp_path):
+        """每行行首统一缩进空白：必须判非等宽，否则等宽换算整条错位。"""
+        seq = "".join(random.choices("ATCG", k=1_200_000))
+        p = tmp_path / "indent.fa"
+        with p.open("w") as f:
+            f.write(">indent\n")
+            for i in range(0, len(seq), 60):
+                f.write("  " + seq[i:i + 60] + "\n")
+
+        v, recs = _view(p, FileFormat.FASTA)
+        v.load_sequence(recs[0])
+        assert v._is_large
+        assert v._seq_length == len(seq)
+        assert v._uniform_lines is False  # 修复前误判为 True，内容错位
+        for start in (0, 1000, 600_000, len(seq) - 100):
+            assert v._load_chunk(start, start + 100) == seq[start:start + 100]
+
     def test_nonuniform_checkpoints_cached(self, tmp_path):
         """非等宽序列二次加载应复用缓存的 checkpoint，内容仍正确。"""
         seq = "ATCGGCTA" * 150_000  # 1,200,000 bp，行宽 70/60/50 交替
@@ -220,6 +257,60 @@ class TestBackgroundScanNoDuplicates:
                     opt = sidebar.get_option_at_index(i)
                     assert tab.sequences[int(opt.id[4:])].header == f"rec_{i}"
             app.exit()
+
+        run(_t())
+
+
+# ──────────────────────────────────────────────
+# 复制守卫 & 后台扫描取消
+# ──────────────────────────────────────────────
+class TestCopyGuardAndScanCancel:
+    def test_copy_seq_guard_large(self, tmp_path, monkeypatch):
+        """>10Mbp 大序列按 y 应拒绝复制并提示，不进入剪贴板。"""
+        seq = "".join(random.choices("ATCG", k=10_000_001))
+        p = tmp_path / "big.fa"
+        with p.open("w") as f:
+            f.write(">big\n")
+            for i in range(0, len(seq), 70):
+                f.write(seq[i:i + 70] + "\n")
+
+        copied: list[str] = []
+
+        async def _t():
+            monkeypatch.setattr(
+                FastaBrowser, "_copy_to_clipboard", lambda self, text: copied.append(text) or True
+            )
+            app = FastaBrowser([p])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                await pilot.press("y")  # 复制当前序列
+                await pilot.pause()
+            app.exit()
+
+        run(_t())
+        assert copied == []  # 守卫生效，未进入剪贴板
+
+    def test_scan_cancelled_stops_background_scan(self, tmp_path):
+        """on_unmount 置取消标志后，后台扫描应尽早退出且不再回 UI 线程。"""
+        n = 1500
+        p = tmp_path / "many2.fa"
+        with p.open("w") as f:
+            for i in range(n):
+                f.write(f">rec_{i}\nACGT\n")
+
+        async def _t():
+            app = FastaBrowser([p])
+            app.run_worker = lambda *a, **k: None  # type: ignore[method-assign]  # 阻止真实后台线程，消除竞态
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                assert app._scan_tasks  # 有待扫描任务
+                app.on_unmount()  # 模拟退出
+                assert app._scan_cancelled is True
+                calls: list = []
+                app.call_from_thread = lambda *a, **k: calls.append(a) or None  # type: ignore[method-assign]
+                app._background_scan()
+                assert calls == []  # 取消后不再投递 UI 更新
+                app.exit()
 
         run(_t())
 

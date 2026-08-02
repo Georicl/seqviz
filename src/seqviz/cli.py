@@ -86,7 +86,7 @@ def main(ctx: typer.Context):
 @app.command()
 def view(
     file: Path = typer.Argument(help="FASTA 文件路径"),
-    wrap: int = typer.Option(60, help="序列每行换行宽度"),
+    wrap: int = typer.Option(60, min=1, help="序列每行换行宽度"),
 ):
     """美化查看 FASTA 文件"""
     _check_file(file)
@@ -154,7 +154,7 @@ def stats(
 def head(
     file: Path = typer.Argument(help="FASTA 文件路径"),
     n: int = typer.Option(10, "-n", "--num", help="显示前 N 条序列"),
-    wrap: int = typer.Option(60, help="序列每行换行宽度"),
+    wrap: int = typer.Option(60, min=1, help="序列每行换行宽度"),
 ):
     """查看 FASTA 文件的前 N 条序列。"""
     _check_file(file)
@@ -190,7 +190,7 @@ def head(
 def fqview(
     file: Path = typer.Argument(help="FASTQ 文件路径"),
     n: int = typer.Option(0, "-n", "--num", help="只显示前 N 条 (0=全部)"),
-    wrap: int = typer.Option(60, help="序列每行换行宽度"),
+    wrap: int = typer.Option(60, min=1, help="序列每行换行宽度"),
 ):
     """美化查看 FASTQ 文件（序列 + 质量值对齐着色）"""
     _check_file(file)
@@ -251,6 +251,10 @@ def browse(
     files: list[Path] = typer.Argument(help="FASTA/FASTQ 文件或目录路径（目录会启动文件选择器）"),
 ):
     """交互式浏览 FASTA/FASTQ 文件（支持多文件标签页、目录浏览）。"""
+    for p in files:  # 校验路径存在，与其他子命令的友好报错保持一致
+        if not p.exists():
+            console.print(f"[red]错误: 路径不存在: {p}[/red]")
+            raise typer.Exit(code=1)
     _launch_browser(list(files))
 
 
@@ -270,13 +274,23 @@ def config(
             with open(config_mod.CONFIG_FILE, "w") as f:
                 json.dump(config_mod.DEFAULT_CONFIG, f, indent=2, ensure_ascii=False)
             console.print(f"[green]已生成默认配置: {config_mod.CONFIG_FILE}[/green]")
-        # 生成 theme.json
+        # 生成 theme.json（仅输出注释性模板，不写入完整主题，
+        # 避免覆盖所有内置主题导致 config.json 的 theme 切换失效）
         if theme_mod.THEME_FILE.exists():
             console.print(f"[yellow]主题文件已存在: {theme_mod.THEME_FILE}[/yellow]")
         else:
+            theme_template = {
+                "_comment": (
+                    "在此覆盖界面主题字段（对 config.json 中 theme 指定的内置主题生效）。"
+                    "可用字段: background/foreground/border/accent/panel/muted/highlight/gutter。"
+                    "仅写入想覆盖的字段，其余保持内置值；以 _ 开头的键为注释会被忽略。"
+                    "切换主题请修改 config.json 的 \"theme\" 字段。"
+                ),
+                "_available_themes": theme_mod.list_themes(),
+            }
             with open(theme_mod.THEME_FILE, "w") as f:
-                json.dump(theme_mod.DEFAULT_THEME, f, indent=2, ensure_ascii=False)
-            console.print(f"[green]已生成默认主题: {theme_mod.THEME_FILE}[/green]")
+                json.dump(theme_template, f, indent=2, ensure_ascii=False)
+            console.print(f"[green]已生成主题模板: {theme_mod.THEME_FILE}[/green]")
         console.print("[dim]编辑 config.json 自定义行为/序列配色/后缀；编辑 theme.json 自定义界面主题。[/dim]")
         console.print(f"[dim]可用内置主题:[/dim] {', '.join(theme_mod.list_themes())}")
         console.print("[dim]在 config.json 中设置 \"theme\": \"nord\" 即可切换[/dim]")
@@ -299,7 +313,7 @@ def config(
     console.print_json(json.dumps(theme_mod.get_theme(), ensure_ascii=False))
     console.print()
     # 显示可用内置主题
-    current = config_mod.get("theme", "light")
+    current = config_mod.get("theme", "dark")
     themes = theme_mod.list_themes()
     theme_list = "  ".join(
         f"[bold green]● {t}[/bold green]" if t == current else f"[dim]○ {t}[/dim]"

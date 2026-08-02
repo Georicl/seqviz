@@ -3,11 +3,21 @@ from rich.text import Text
 from seqviz import config
 from seqviz.seq_type import SeqType, detect_seq_type
 
-# DNA 碱基配色方案（从配置加载，可被用户 JSON 覆盖）
+# DNA 碱基配色方案的导入期快照（仅供外部直接引用/测试）；渲染路径经
+# _get_dna_colors() 在消费时读取配置，以尊重 reload_config 的刷新契约。
 DNA_COLORS = dict(config.get("colors.dna", {}))
 
-# 质量值着色阈值（从配置加载）
-_QUALITY_THRESHOLDS = config.get("colors.quality_thresholds", {})
+
+def _get_dna_colors() -> dict:
+    """消费时读取 DNA 配色（尊重配置刷新；类型异常时回退空 dict）。"""
+    colors = config.get("colors.dna", {})
+    return colors if isinstance(colors, dict) else {}
+
+
+def _get_quality_thresholds() -> dict:
+    """消费时读取质量值着色阈值（尊重配置刷新；类型异常时回退空 dict）。"""
+    thresholds = config.get("colors.quality_thresholds", {})
+    return thresholds if isinstance(thresholds, dict) else {}
 
 PROTEIN_COLORS: dict[str, str] = {}
 
@@ -35,7 +45,7 @@ def colorize_sequence(seq: str, seq_type: SeqType | None = None) -> Text:
     if seq_type is None:
         seq_type = detect_seq_type(seq=seq)
 
-    color_map = PROTEIN_COLORS if seq_type == SeqType.PROTEIN else DNA_COLORS
+    color_map = PROTEIN_COLORS if seq_type == SeqType.PROTEIN else _get_dna_colors()
 
     # 按颜色分段批量 append（减少 span 数量，提升渲染性能）
     text = Text()
@@ -62,9 +72,9 @@ def colorize_quality(quality: str) -> Text:
     Q >= low    → bright_red (低)
     Q <  low    → red (极低)
     """
-    high = _QUALITY_THRESHOLDS.get("high", 30)
-    medium = _QUALITY_THRESHOLDS.get("medium", 20)
-    low = _QUALITY_THRESHOLDS.get("low", 10)
+    high = _get_quality_thresholds().get("high", 30)
+    medium = _get_quality_thresholds().get("medium", 20)
+    low = _get_quality_thresholds().get("low", 10)
 
     def _style(score: int) -> str:
         if score >= high:
@@ -116,17 +126,21 @@ def quality_bar(quality: str, width: int = 40) -> Text:
     scores = [ord(c) - 33 for c in quality]
     if not scores:
         return Text()
-    
+
+    high = _get_quality_thresholds().get("high", 30)
+    medium = _get_quality_thresholds().get("medium", 20)
+    low = _get_quality_thresholds().get("low", 10)
+
     bin_size = max(1, len(scores) // width)
     text = Text()
     for i in range(0, len(scores), bin_size):
         chunk = scores[i:i + bin_size]
         avg = sum(chunk) / len(chunk)
-        if avg >= 30:
+        if avg >= high:
             text.append("█", style="green")
-        elif avg >= 20:
+        elif avg >= medium:
             text.append("█", style="yellow")
-        elif avg >= 10:
+        elif avg >= low:
             text.append("█", style="bright_red")
         else:
             text.append("█", style="red")

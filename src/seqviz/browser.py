@@ -47,6 +47,29 @@ class FileFormat(Enum):
     FASTQ = "fastq"
 
 
+def detect_format(filepath: Path) -> FileFormat:
+    """根据文件后缀或首字符自动检测格式（支持 gzip，后缀大小写不敏感）。
+
+    精确后缀匹配优先（.fastq/.fq → FASTQ；.fasta/.fa/.fna/.faa/.aa/.seq → FASTA），
+    后缀不明确时读首字符判定（'@' → FASTQ，否则 FASTA）。为 browser 与
+    file_browser 共用的单一入口，避免两套检测规则分歧。
+    """
+    suffix = filepath.suffix.lower()
+    if suffix == ".gz":
+        suffix = "." + filepath.stem.rsplit(".", 1)[-1].lower() if "." in filepath.stem else ""
+    if suffix in (".fastq", ".fq"):
+        return FileFormat.FASTQ
+    if suffix in (".fasta", ".fa", ".fna", ".faa", ".aa", ".seq"):
+        return FileFormat.FASTA
+    # 后缀不明确时读首字符（透明处理 gzip）
+    try:
+        with _open_seq_file(filepath, "rb") as f:
+            first_byte = f.read(1)
+    except OSError:
+        return FileFormat.FASTA
+    return FileFormat.FASTQ if first_byte == b"@" else FileFormat.FASTA
+
+
 class SequenceInfo:
     """存储一条序列的元信息（不加载序列本身）。
 
@@ -167,7 +190,7 @@ class SequenceView(Static):
         self.view_offset = 0
         self.current_seq: SequenceInfo | None = None
         # 从配置加载显示参数
-        self._config_wrap = config.get("browser.wrap_width", 60)
+        self._config_wrap = max(1, int(config.get("browser.wrap_width", 60)))  # 下限 1，避免除零
         self.WRAP = self._config_wrap
         self.auto_wrap = config.get("browser.auto_wrap", True)  # 自适应窗口宽度
         self.show_line_numbers = config.get("browser.show_line_numbers", True)
@@ -366,7 +389,8 @@ class SequenceView(Static):
               供非等宽行宽记录快速定位（uniform 时不使用）。
 
         uniform 判定宽容“末行短尾”（FASTA 最后一行不足行宽是合法的），
-        但不宽容中间行宽变化或空行——这些会导致等宽 offset 换算错位。
+        但不宽容中间行宽变化、空行、行首空白或末行长于首行——
+        这些都会导致等宽 offset 换算错位。
         """
         length = 0
         first_chars = -1
@@ -398,6 +422,14 @@ class SequenceView(Static):
                     first_chars, first_bytes = stripped_len, line_bytes
                 elif stripped_len != first_chars or line_bytes != first_bytes:
                     pending_mismatch = True  # 暂记，若为末行则不算非等宽
+                # 行首空白（空格/制表符等）会使碱基偏离行首字节，破坏等宽换算；
+                # 行尾空白不偏移碱基位置，可安全容忍（首行也需检测）
+                if stripped_len > 0 and raw_line.lstrip() != raw_line:
+                    nonuniform = True
+        # EOF 时仅允许“末行严格短于首行”作为合法短尾；
+        # 末行更长会破坏等宽换算（start_line 越过末行导致 offset 错位）
+        if pending_mismatch and first_chars >= 0 and stripped_len > first_chars:
+            nonuniform = True
         f.seek(seq_data_start)  # 回到序列数据开头
         return length, (not nonuniform), first_chars, first_bytes, checkpoints
 
@@ -449,13 +481,16 @@ class SequenceView(Static):
             raw_line = f.readline()
             if not raw_line or raw_line.startswith(b">"):
                 break
+            if skip > 0:
+                # 整行都可跳过时无需 decode/切片（超长行避免重复分配内存）
+                stripped_len = len(raw_line.strip())
+                if stripped_len <= skip:
+                    skip -= stripped_len
+                    continue
             decoded = raw_line.strip().decode()
             if not decoded:
                 continue  # 跳过空行
             if skip > 0:
-                if len(decoded) <= skip:
-                    skip -= len(decoded)
-                    continue
                 decoded = decoded[skip:]
                 skip = 0
             take = needed - total
@@ -603,6 +638,9 @@ class HelpScreen(ModalScreen):
             ("/", "搜索序列名称"),
             (":", "跳转到第 N 条序列"),
             ("e", "导出当前序列到文件"),
+            ("y", "复制当前序列"),
+            ("c", "范围复制 (如 100-200)"),
+            ("B", "返回文件选择器"),
             ("?", "显示此帮助"),
             ("Tab", "切换文件标签页"),
             ("q", "退出"),
@@ -659,6 +697,7 @@ class FastaBrowser(App):
 
     TITLE = "Seqviz"
     SUB_TITLE = "生物序列终端浏览器"
+    # DARK/CSS 在导入时从主题单例取值；切换主题后需新建实例（见 theme.reset_theme 说明）
     DARK = is_dark_theme(get_theme_name())  # 根据主题自动切换
 
     CSS = build_browser_css(get_theme())
@@ -678,8 +717,9 @@ class FastaBrowser(App):
         Binding("y", "copy_seq", "复制", show=True, priority=True),
         Binding("c", "copy_range", "范围复制", show=True, priority=True),
         Binding("B", "back", "返回选择", show=True, priority=True),
+        Binding("tab", "next_tab", "下一标签", show=True, priority=True),
         Binding("question_mark", "help", "帮助", show=True, priority=True),
-        Binding("q", "quit", "退出", show=True, priority=True),
+        Binding("q", "quit_app", "退出", show=True, priority=True),
         Binding("ctrl+c", "quit", "退出", show=False, priority=True),
         Binding("ctrl+q", "quit", "退出", show=False, priority=True),
     ]
@@ -691,6 +731,7 @@ class FastaBrowser(App):
         self._command_mode: str = ""  # "search" or "goto"
         self.source_dir = source_dir  # 来源目录（非 None 时 B 键可返回文件选择器）
         self._scan_tasks: list[tuple[Path, FileFormat, int]] = []  # 待后台扫描的文件
+        self._scan_cancelled = False  # 退出时置 True，后台扫描线程尽早结束
 
         # 快速扫描前 500 条（首屏快速呈现），剩余加入后台扫描队列
         QUICK_LIMIT = 500
@@ -703,18 +744,8 @@ class FastaBrowser(App):
 
     @staticmethod
     def _detect_format(filepath: Path) -> FileFormat:
-        """根据文件后缀或首字符自动检测格式（支持 gzip）。"""
-        suffix = filepath.suffix.lower()
-        if suffix == ".gz":
-            suffix = "." + filepath.stem.rsplit(".", 1)[-1].lower() if "." in filepath.stem else ""
-        if suffix in (".fastq", ".fq"):
-            return FileFormat.FASTQ
-        if suffix in (".fasta", ".fa", ".fna", ".faa"):
-            return FileFormat.FASTA
-        # 后缀不明确时读首字符（透明处理 gzip）
-        with _open_seq_file(filepath, "rb") as f:
-            first_byte = f.read(1)
-        return FileFormat.FASTQ if first_byte == b"@" else FileFormat.FASTA
+        """根据文件后缀或首字符自动检测格式（委托给模块级 detect_format）。"""
+        return detect_format(filepath)
 
     @staticmethod
     def _scan_file_quick(filepath: Path, fmt: FileFormat, limit: int = 500) -> tuple[list[SequenceInfo], bool]:
@@ -754,8 +785,10 @@ class FastaBrowser(App):
                                 SequenceList(tab.sequences, id=f"sidebar-{i}", classes="sidebar"),
                                 SequenceView(tab.filepath, file_format=tab.file_format, id=f"main-{i}", classes="main-view"),
                             )
+            # 状态栏 dock 在 body 内底部：位于内容之下、Footer 之上，
+            # 避免与同样 dock: bottom 的 Footer 重叠遮挡
+            yield StatusBar(id="statusbar")
 
-        yield StatusBar(id="statusbar")
         yield Footer()
 
     def on_mount(self):
@@ -769,7 +802,12 @@ class FastaBrowser(App):
             self.run_worker(self._background_scan, thread=True, exclusive=False)
 
     def on_unmount(self):
-        """应用退出时关闭所有持久文件句柄，避免文件描述符泄露。"""
+        """应用退出时置取消标志并关闭所有持久文件句柄，避免文件描述符泄露。
+
+        后台扫描线程在每批之间检查取消标志后尽早退出，
+        避免退出后继续占用 CPU/IO 或向已关闭的事件循环投递更新。
+        """
+        self._scan_cancelled = True
         for view in self.query(SequenceView):
             view.close()
 
@@ -781,16 +819,20 @@ class FastaBrowser(App):
         """
         BATCH = 200
         for fp, fmt, start_idx in self._scan_tasks:
+            if self._scan_cancelled:
+                break
             tab_idx = next(i for i, t in enumerate(self.file_tabs) if t.filepath == fp)
             batch: list[SequenceInfo] = []
 
             for seq_info in _iter_sequences(fp, fmt, start_idx=start_idx):
+                if self._scan_cancelled:
+                    break
                 batch.append(seq_info)
                 if len(batch) >= BATCH:
                     self.call_from_thread(self._apply_scan_batch, tab_idx, batch)
                     batch = []
 
-            if batch:
+            if batch and not self._scan_cancelled:
                 self.call_from_thread(self._apply_scan_batch, tab_idx, batch)
 
         self._scan_tasks.clear()
@@ -1096,9 +1138,13 @@ class FastaBrowser(App):
 
     def action_export_seq(self):
         tab = self.current_tab
+        if not tab.sequences:
+            self.notify("当前没有序列可导出", title="导出", severity="warning")
+            return
         seq_info = tab.sequences[tab.current_index]
 
-        seq_id = seq_info.header.split()[0].replace("/", "_").replace("\\", "_")
+        seq_id = seq_info.header.split()[0] if seq_info.header else "unknown"
+        seq_id = seq_id.replace("/", "_").replace("\\", "_")
         ext = ".fastq" if tab.file_format == FileFormat.FASTQ else ".fasta"
         out_path = Path(f"{seq_id}{ext}")
 
@@ -1110,6 +1156,9 @@ class FastaBrowser(App):
 
     def action_copy_seq(self):
         """复制当前序列到系统剪贴板。超大序列建议改用 e 导出。"""
+        if not self.current_tab.sequences:
+            self.notify("当前没有序列可复制", title="复制", severity="warning")
+            return
         main_view = self._get_main_view()
         # 剪贴板需要完整字符串；超大序列（>10Mbp）拼接开销大，提示改用导出
         if main_view._is_large and main_view._seq_length > 10_000_000:
@@ -1134,9 +1183,39 @@ class FastaBrowser(App):
     def action_help(self):
         self.push_screen(HelpScreen())
 
+    def action_next_tab(self):
+        """Tab: 切换到下一个文件标签页（多文件时）。"""
+        # 命令栏或帮助面板激活时不切换（App 级 priority 绑定会穿透模态屏幕）
+        if self._get_command_bar() is not None or isinstance(self.screen, HelpScreen):
+            return
+        if len(self.file_tabs) <= 1:
+            return
+        next_idx = (self.active_tab + 1) % len(self.file_tabs)
+        try:
+            tabs = self.query_one(TabbedContent)
+            # 程序化设置 active 会投递 TabActivated；抑制事件，
+            # 以本方法的手动更新为唯一加载路径（避免双重 load_sequence）
+            with tabs.prevent(TabbedContent.TabActivated):
+                tabs.active = f"tab-{next_idx}"
+        except Exception:  # noqa: BLE001, S110
+            pass
+        self.active_tab = next_idx
+        self._load_current()
+
+    def action_quit_app(self):
+        """q: 退出；帮助面板打开时先关闭面板而非退出应用。"""
+        if isinstance(self.screen, HelpScreen):
+            self.screen.dismiss()
+            return
+        self.exit()
+
     # ── 标签页切换 ──
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         tab_id = event.tab.id or ""
+        # ContentTab 的 id 带 "--content-tab-" 内部前缀，先归一化为 "tab-N"
+        tab_id = tab_id.removeprefix("--content-tab-")
         if tab_id.startswith("tab-"):
-            self.active_tab = int(tab_id[4:])
-            self._load_current()
+            idx = int(tab_id[4:])
+            if idx != self.active_tab:  # 键盘切换已手动处理，避免重复加载
+                self.active_tab = idx
+                self._load_current()
