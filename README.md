@@ -18,6 +18,7 @@
 
 - 🧬 **DNA / 蛋白质自动检测** — 四色碱基着色 (A/T/C/G)，氨基酸按化学性质分组着色
 - 📊 **FASTQ 质量可视化** — Phred 梯度着色、质量分布条、Q30 统计
+- 🧪 **VCF 变异浏览** — 变异类型着色、逐样本基因型 + reads 比例条、基因型矩阵、过滤/排序/Ts-Tv 统计
 - 🖥️ **交互式 TUI 浏览器** — 搜索、跳转、复制、导出、多标签页，支持十万级序列
 - 📁 **目录文件选择器** — 扫描目录中的序列文件，预览、多选批量打开
 - 📈 **统计摘要** — 序列条数、总长度、N50、GC 含量，表格化输出
@@ -64,6 +65,9 @@ seqviz stats genome.fasta
 
 # 交互式浏览器
 seqviz browse genome.fasta
+
+# VCF 变异浏览器
+seqviz browse variants.vcf
 ```
 
 ## 命令一览
@@ -75,7 +79,7 @@ seqviz browse genome.fasta
 | `seqviz fqview <file>` | 彩色查看 FASTQ 文件（含质量值） |
 | `seqviz head <file>` | 查看前 N 条序列 |
 | `seqviz stats <file>` | 输出统计摘要表格 |
-| `seqviz browse <path>` | 交互式 TUI 浏览器 |
+| `seqviz browse <path>` | 交互式 TUI 浏览器（FASTA/FASTQ/VCF 自动路由） |
 | `seqviz config [--init]` | 查看/生成配置文件 |
 
 ## 交互式浏览器
@@ -100,7 +104,7 @@ seqviz browse genome.fasta
 
 ### 文件选择器
 
-当 `browse` 传入目录（或直接运行 `seqviz`）时启动。自动扫描 `.fa .fasta .fna .faa .aa .seq .fq .fastq` 及 `.gz`。
+当 `browse` 传入目录（或直接运行 `seqviz`）时启动。自动扫描 `.fa .fasta .fna .faa .aa .seq .fq .fastq .vcf` 及 `.gz`。
 
 | 按键 | 功能 |
 |------|------|
@@ -109,6 +113,28 @@ seqviz browse genome.fasta
 | `a` | 全选/取消 |
 | `Enter` | 打开（多选则批量标签页） |
 | `q` | 取消并退出 |
+
+## VCF 变异浏览器
+
+```bash
+seqviz browse variants.vcf
+```
+
+左右双栏：**左侧变异列表**（懒扫描索引 + 虚拟化）+ **右侧变异详情 / 基因型矩阵**。
+
+- 变异类型着色：转换 ● 绿 · 颠换 ● 蓝 · 插入 ◆ 黄 · 缺失 ◆ 红
+- 行颜色编码可信度：PASS 绿 · 低质量黄 · 低深度红
+- 详情面板逐样本展示基因型 + AD reads 比例条
+
+| 按键 | 功能 | 按键 | 功能 |
+|------|------|------|------|
+| `j` / `k` | 上下移动 | `Space` / `b` | 翻页 |
+| `/` | 搜索 ID 或坐标 | `f` | 过滤循环（全部/PASS/SNP/InDel） |
+| `s` | 排序（位置 ↔ QUAL） | `t` | 详情 ↔ 基因型矩阵 |
+| `i` | 文件信息 | `y` | 复制当前 VCF 行 |
+| `?` | 帮助 | `q` | 退出 |
+
+> 底部状态栏常驻统计：变异总数 · SNP/InDel · Ts/Tv · PASS 数 · AF 均值，随过滤实时联动。目前支持未压缩 `.vcf`（bgzip/tabix 规划中）。
 
 ## 配置
 
@@ -202,7 +228,7 @@ seqviz config           # 查看当前生效配置与可用主题
 ```bash
 git clone https://github.com/Georicl/seqviz.git && cd seqviz
 uv sync
-uv run pytest test/ -v          # 183 个测试
+uv run pytest test/ -v          # 254 个测试
 ```
 
 ## License
