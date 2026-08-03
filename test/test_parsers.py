@@ -165,3 +165,38 @@ class TestParseFastaGzip:
             fh.write(content)
         records = list(parse_fasta(f))
         assert records[0][1] == "AAACCC"
+
+
+class TestParseEncodingAndMalformed:
+    def test_fasta_non_utf8_header(self, tmp_path: Path):
+        """latin-1 编码 header 应宽容解码而非 UnicodeDecodeError。"""
+        f = tmp_path / "latin1.fa"
+        f.write_bytes(b">caf\xe9 header\nACGT\n")
+        records = list(parse_fasta(f))
+        assert len(records) == 1
+        assert records[0][0].startswith("caf")
+        assert records[0][1] == "ACGT"
+
+    def test_fastq_trailing_blank_line_skipped(self, tmp_path: Path):
+        """尾部空行应被跳过，不报格式错误。"""
+        from seqviz.fastq import parse_fastq
+        f = tmp_path / "t.fastq"
+        f.write_text("@r1\nACGT\n+\nIIII\n\n")
+        records = list(parse_fastq(f))
+        assert len(records) == 1
+        assert records[0] == ("r1", "ACGT", "IIII")
+
+    def test_fastq_blank_lines_between_records(self, tmp_path: Path):
+        """记录之间的空行应被跳过。"""
+        from seqviz.fastq import parse_fastq
+        f = tmp_path / "t.fastq"
+        f.write_text("@r1\nACGT\n+\nIIII\n\n@r2\nTTTT\n+\nHHHH\n")
+        records = list(parse_fastq(f))
+        assert len(records) == 2
+
+    def test_fastq_non_utf8_header(self, tmp_path: Path):
+        from seqviz.fastq import parse_fastq
+        f = tmp_path / "latin1.fastq"
+        f.write_bytes(b"@caf\xe9\nACGT\n+\nIIII\n")
+        records = list(parse_fastq(f))
+        assert len(records) == 1

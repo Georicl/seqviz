@@ -13,7 +13,7 @@ from pathlib import Path
 
 BUILTIN_THEMES: dict[str, dict] = {
 
-    # ── 1. light（默认 · 白底黑字 · 清晰明亮） ──
+    # ── 1. light（白底黑字 · 清晰明亮） ──
     "light": {
         "background": "#ffffff",
         "foreground": "#1a1a1a",
@@ -155,10 +155,13 @@ def load_theme(theme_name: str | None = None) -> dict:
             with open(THEME_FILE) as f:
                 user_theme = json.load(f)
             if isinstance(user_theme, dict):
-                # 忽略 "name" 与 "_" 前缀的注释/模板键，仅合并真正的颜色字段
+                # 忽略 "name" 与 "_" 前缀的注释/模板键，仅合并真正的颜色字段；
+                # 非字符串值（null/数字/数组）过滤掉：直接内插 CSS 会触发
+                # StylesheetParseError 导致应用无法启动
                 user_colors = {
                     k: v for k, v in user_theme.items()
                     if k != "name" and not (isinstance(k, str) and k.startswith("_"))
+                    and isinstance(v, str)
                 }
                 if user_colors:
                     theme = _deep_merge(theme, user_colors)

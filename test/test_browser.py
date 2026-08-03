@@ -463,3 +463,89 @@ class TestHelpScreen:
                 await pilot.pause()
                 assert app.active_tab == 0  # 未切换
         run(_t())
+
+
+# ──────────────────────────────────────────────
+# 三轮审查回归测试
+# ──────────────────────────────────────────────
+class TestExportSafety:
+    def test_export_twice_no_overwrite(self, tmp_path, monkeypatch):
+        """重复导出同一序列应自动追加序号，不静默覆盖已有文件。"""
+        async def _t():
+            monkeypatch.chdir(tmp_path)
+            app = FastaBrowser([TEST_FA])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                await pilot.press("e")
+                await pilot.pause()
+                await pilot.press("e")
+                await pilot.pause()
+            names = sorted(p.name for p in tmp_path.glob("*.fasta"))
+            assert names == ["chr1.fasta", "chr1_1.fasta"]
+        run(_t())
+
+    def test_export_sanitizes_illegal_chars(self, tmp_path, monkeypatch):
+        """header 含跨平台非法文件名字符（: * | 等）时应净化而非 OSError 崩溃。"""
+        p = tmp_path / "bad.fa"
+        p.write_text(">seq:1|test*A\nACGT\n")
+
+        async def _t():
+            monkeypatch.chdir(tmp_path)
+            app = FastaBrowser([p])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                await pilot.press("e")  # 不应崩溃
+                await pilot.pause()
+            exported = list(tmp_path.glob("*.fasta"))
+            assert len(exported) == 1
+            assert ":" not in exported[0].name and "|" not in exported[0].name
+        run(_t())
+
+
+class TestDuplicatePathScan:
+    def test_same_file_opened_twice_scan_no_cross_pollution(self, tmp_path):
+        """同一路径打开两次（>500 条触发后台续扫）：两个标签页各自完整，不错配。"""
+        p = tmp_path / "many.fa"
+        p.write_text("".join(f">s{i}\nACGT\n" for i in range(600)))
+
+        async def _t():
+            app = FastaBrowser([p, p])
+            async with app.run_test(size=(100, 30)) as pilot:
+                for _ in range(100):  # 等待后台扫描完成
+                    await pilot.pause()
+                    if all(len(t.sequences) >= 600 for t in app.file_tabs):
+                        break
+            assert len(app.file_tabs[0].sequences) == 600
+            assert len(app.file_tabs[1].sequences) == 600  # 不再停留在 500
+        run(_t())
+
+
+class TestResizeClamp:
+    def test_view_offset_clamped_after_wrap_change(self):
+        """换行宽度变化（窗口加宽）后 view_offset 应钳制在有效范围，避免空白屏。"""
+        async def _t():
+            app = FastaBrowser([TEST_FA])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                view = app.query_one("#main-0")
+                view.view_offset = 10_000  # 模拟越界偏移
+                view.WRAP = 5  # 强制 on_resize 认定宽度已变化并重算
+                view.on_resize(None)
+                assert view.view_offset <= max(0, view._total_lines - 1)
+        run(_t())
+
+
+class TestNonUtf8Header:
+    def test_latin1_header_no_crash(self, tmp_path):
+        """非 UTF-8 编码的 header（latin-1 字节）应宽容处理而非 UnicodeDecodeError。"""
+        p = tmp_path / "latin1.fa"
+        p.write_bytes(b">caf\xe9 header\nACGT\n")
+
+        async def _t():
+            app = FastaBrowser([p])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+            seqs = app.file_tabs[0].sequences
+            assert len(seqs) == 1
+            assert "caf" in seqs[0].header  # 非法字节被替换，其余保留
+        run(_t())

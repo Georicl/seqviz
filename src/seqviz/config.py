@@ -3,6 +3,7 @@
 配置文件位置: ~/.config/seqviz/config.json
 """
 
+import copy
 import json
 from pathlib import Path
 
@@ -93,8 +94,12 @@ def _coerce_types(default, value):
 
 
 def load_config() -> dict:
-    """加载配置：内置默认值 <- 用户配置文件。配置无效（语法或类型）时回退默认值。"""
-    config = DEFAULT_CONFIG
+    """加载配置：内置默认值 <- 用户配置文件。配置无效（语法或类型）时回退默认值。
+
+    返回值可安全修改：无用户配置时返回默认值的深拷贝，
+    避免消费方原地修改污染全局 DEFAULT_CONFIG。
+    """
+    config = copy.deepcopy(DEFAULT_CONFIG)
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE) as f:
@@ -120,10 +125,13 @@ def get_config() -> dict:
 
 
 def reload_config() -> dict:
-    """强制重新加载配置。"""
+    """强制重新加载配置（同步刷新 theme 单例，保持两者重载语义一致）。"""
     global _config
     _config = None
-    return get_config()
+    cfg = get_config()
+    from seqviz import theme as theme_mod  # 延迟导入避免循环依赖
+    theme_mod.reset_theme()
+    return cfg
 
 
 def get(path: str, default=None):

@@ -82,6 +82,23 @@ def _test_fixtures():
     yield
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_user_config(tmp_path_factory):
+    """隔离真实用户配置：测试不得依赖运行者 ~/.config/seqviz 的内容。
+
+    若运行者曾执行 config --init 并做过定制（如 wrap_width=99），
+    未隔离时默认值断言会直接失败，导致测试基线环境敏感。
+    """
+    from seqviz import config as config_mod
+    from seqviz import theme as theme_mod
+    tmp = tmp_path_factory.mktemp("seqviz_cfg")
+    config_mod.CONFIG_DIR = tmp
+    config_mod.CONFIG_FILE = tmp / "config.json"
+    theme_mod.THEME_DIR = tmp
+    theme_mod.THEME_FILE = tmp / "theme.json"
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _reset_config_theme_singletons():
     """每个测试后重置 config/theme 单例，避免缓存泄漏造成顺序敏感。"""

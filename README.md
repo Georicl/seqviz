@@ -8,7 +8,7 @@
 
 [安装](#安装) · [快速开始](#快速开始) · [浏览器](#交互式浏览器) · [配置](#配置)
 
-<sup>当前版本 v0.6.2 · 需要 Python >= 3.12</sup>
+<sup>当前版本 v0.6.3 · 需要 Python >= 3.12</sup>
 
 </div>
 
@@ -28,15 +28,12 @@
 ## 安装
 
 ```bash
-# 从 PyPI 安装（推荐）
-pipx install seqviz
-
-# 或 pip 安装
-pip install seqviz
-
-# 从源码安装
+# 从源码安装（推荐，PyPI 发布筹备中）
 git clone https://github.com/Georicl/seqviz.git && cd seqviz
 uv tool install .
+
+# 或从 GitHub Release 下载 wheel 后安装
+uv tool install seqviz-<version>-py3-none-any.whl
 ```
 
 安装后启用 shell 补全（可选）：
@@ -111,6 +108,7 @@ seqviz browse genome.fasta
 | `Space` | 切换多选 |
 | `a` | 全选/取消 |
 | `Enter` | 打开（多选则批量标签页） |
+| `q` | 取消并退出 |
 
 ## 配置
 
@@ -134,11 +132,20 @@ seqviz config           # 查看当前生效配置与可用主题
     "sidebar_width": 32,
     "show_line_numbers": true,
     "show_quality": true
+  },
+  "colors": {
+    "dna": { "A": "green", "T": "red", "C": "blue", "G": "yellow", "N": "dim" },
+    "quality_thresholds": { "high": 30, "medium": 20, "low": 10 }
+  },
+  "file_browser": {
+    "extensions": [".fa", ".fasta", ".fna", ".faa", ".aa", ".seq", ".fq", ".fastq"]
   }
 }
 ```
 
 > `auto_wrap: true`（默认）时，序列按窗口宽度自动换行；设为 `false` 则使用固定的 `wrap_width`。
+>
+> `colors.dna` 自定义碱基着色（Rich 颜色名或十六进制）；`colors.quality_thresholds` 控制质量值三档着色的 Phred 阈值；`file_browser.extensions` 控制文件选择器扫描的后缀。运行 `seqviz config` 可查看完整默认值。
 
 </details>
 
@@ -182,6 +189,8 @@ seqviz config           # 查看当前生效配置与可用主题
 | 加载序列 | 79Mbp chr1 (分块模式) | ~3 ms |
 | 滚动 | 超长序列浏览 | ~3.8 ms/次 |
 
+> **v0.6.3 健壮性与可靠性修复**：导出不再静默覆盖已有文件（自动追加序号）并净化全部跨平台非法文件名字符；同一文件多标签页后台扫描不再错配污染数据；非 UTF-8 编码 header 宽容处理不再崩溃；theme.json 非法类型字段自动过滤不再导致应用无法启动；文件选择器序列计数真正可取消（GB 级文件预览后退出不再挂起）；窗口加宽后不再空白屏；剪贴板工具异常退出不再崩溃；畸形 FASTQ 空行宽容与友好报错；空文件 CLI 改为非零退出；测试环境隔离用户配置；测试套件扩充至 210 项。
+>
 > **v0.6.2 健壮性与体验修复**：修复帮助面板打开时按 q 直接退出应用（现为关闭面板）；Tab 键真实切换文件标签页且不再穿透模态帮助屏；空文件按 e/y 不再崩溃；配置类型校验宽容 0/1 与整数值 float（避免行为静默反转）；文件选择器序列计数移入后台线程并去重、退出可取消；格式检测统一单一入口、gzip 后缀大小写全链路一致；`config --init` 不再生成覆盖内置主题的 theme.json；修复状态栏被 Footer 遮挡；测试套件扩充至 183 项。
 >
 > **v0.6.1 正确性与性能修复**：修复后台扫描重复追加导致的侧栏点选错位；修复可变行宽/含空行 FASTA 分块读取错位（checkpoint 索引回退）；后台扫描移入线程不再冻结 UI（p95 延迟 1445ms→71ms）；大序列指标缓存 + 流式导出；测试套件扩充至 160 项。

@@ -1,6 +1,7 @@
 """目录序列文件浏览器：扫描目录中的序列文件，提供选择界面。"""
 
 import gzip
+import threading
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -45,8 +46,12 @@ def detect_file_format(path: Path) -> FileFormat:
     return detect_format(path)
 
 
-def count_sequences(path: Path, fmt: FileFormat) -> int:
-    """快速统计序列条数。FASTA 数 '>' 行，FASTQ 按 4 行一组。"""
+def count_sequences(path: Path, fmt: FileFormat, cancel_event: threading.Event | None = None) -> int:
+    """快速统计序列条数。FASTA 数 '>' 行，FASTQ 按 4 行一组。
+
+    cancel_event 置位时在读取间隙尽早中断（返回已统计部分），
+    避免 GB 级文件预览后退出时进程挂起直到整文件读完。
+    """
     opener = gzip.open if path.suffix.lower() == ".gz" else open
     count = 0
     try:
@@ -56,13 +61,20 @@ def count_sequences(path: Path, fmt: FileFormat) -> int:
             with opener(path, "rb") as f:
                 for _ in f:
                     lines += 1
+                    # 每 16K 行检查一次取消标志（摊薄开销可忽略）
+                    if cancel_event is not None and lines % 16384 == 0 and cancel_event.is_set():
+                        return lines // 4
             count = lines // 4
         else:
             # FASTA: 数以 '>' 开头的行
+            lines = 0
             with opener(path, "rb") as f:
                 for line in f:
+                    lines += 1
                     if line.startswith(b">"):
                         count += 1
+                    if cancel_event is not None and lines % 16384 == 0 and cancel_event.is_set():
+                        return count
     except OSError:
         count = 0
     return count
@@ -169,6 +181,7 @@ class FileBrowser(App):
         self.selected: set[int] = set()  # 多选索引集合
         self._preview_index = -1  # 当前预览的文件索引
         self._count_cancelled = False  # 退出时置 True，计数线程不再回 UI 线程
+        self._count_cancel_event = threading.Event()  # 中断 count_sequences 的全文件读取
         self._counting: set[int] = set()  # 正在计数的文件索引（去重，避免重复全量读取）
 
     def on_mount(self):
@@ -213,10 +226,13 @@ class FileBrowser(App):
     def _count_in_thread(self, index: int):
         """后台线程：统计序列数后回 UI 线程应用（避免阻塞事件循环）。"""
         info = self.files[index]
-        count = count_sequences(info.path, info.fmt)
+        count = count_sequences(info.path, info.fmt, self._count_cancel_event)
         # 退出后不再向已关闭的事件循环投递回调
         if not self._count_cancelled:
-            self.call_from_thread(self._apply_seq_count, index, count)
+            try:
+                self.call_from_thread(self._apply_seq_count, index, count)
+            except RuntimeError:
+                pass  # 检查标志与投递之间应用恰好退出（App is not running）
 
     def _apply_seq_count(self, index: int, count: int):
         """UI 线程：回填序列数，仅当该文件仍是当前预览时刷新。"""
@@ -227,8 +243,9 @@ class FileBrowser(App):
                 self.query_one("#preview", FilePreview).show_info(self.files[index])
 
     def on_unmount(self):
-        """退出时置取消标志，计数线程不再投递 UI 更新。"""
+        """退出时置取消标志：计数线程中断文件读取且不再投递 UI 更新。"""
         self._count_cancelled = True
+        self._count_cancel_event.set()
 
     def compose(self) -> ComposeResult:
         yield Header()

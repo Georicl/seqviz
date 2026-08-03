@@ -1,4 +1,5 @@
 import gzip
+import re
 import subprocess
 from collections.abc import Generator
 from enum import Enum
@@ -118,6 +119,8 @@ def _iter_sequences(filepath: Path, fmt: FileFormat, start_idx: int = 0) -> Gene
                 if not header_line:
                     return
                 offset += len(header_line)
+                if not header_line.strip():
+                    continue  # 跳过空行（尾部空行/空行分隔），避免产生幻影记录
                 seq_line = f.readline()
                 offset += len(seq_line)
                 plus_line = f.readline()  # + 行
@@ -125,7 +128,7 @@ def _iter_sequences(filepath: Path, fmt: FileFormat, start_idx: int = 0) -> Gene
                 quality_line = f.readline()  # quality 行
                 offset += len(quality_line)
                 if idx >= start_idx:
-                    header = header_line.strip()[1:].decode()
+                    header = header_line.strip()[1:].decode(errors="replace")
                     yield SequenceInfo(idx, header, record_offset, len(seq_line.strip()), has_quality=True)
                 idx += 1
     else:
@@ -135,7 +138,8 @@ def _iter_sequences(filepath: Path, fmt: FileFormat, start_idx: int = 0) -> Gene
             for raw_line in f:
                 if raw_line.startswith(b">"):
                     if idx >= start_idx:
-                        yield SequenceInfo(idx, raw_line[1:].strip().decode(), offset)
+                        # errors="replace"：宽容非 UTF-8 编码的 header（遗留 latin-1/GBK 文件）
+                        yield SequenceInfo(idx, raw_line[1:].strip().decode(errors="replace"), offset)
                     idx += 1
                 offset += len(raw_line)
 
@@ -592,6 +596,8 @@ class SequenceView(Static):
         if new_wrap != self.WRAP:
             self.WRAP = new_wrap
             self._recalc_total_lines()
+            # 钳制偏移：窗口加宽后总行数减少，旧偏移可能越界导致渲染空白屏
+            self.view_offset = min(self.view_offset, max(0, self._total_lines - 1))
         if self._seq or self._header_lines:
             self._update_display()
 
@@ -730,7 +736,7 @@ class FastaBrowser(App):
         self.active_tab = 0
         self._command_mode: str = ""  # "search" or "goto"
         self.source_dir = source_dir  # 来源目录（非 None 时 B 键可返回文件选择器）
-        self._scan_tasks: list[tuple[Path, FileFormat, int]] = []  # 待后台扫描的文件
+        self._scan_tasks: list[tuple[int, Path, FileFormat, int]] = []  # 待后台扫描的 (标签页索引, 文件, 格式, 起始位置)
         self._scan_cancelled = False  # 退出时置 True，后台扫描线程尽早结束
 
         # 快速扫描前 500 条（首屏快速呈现），剩余加入后台扫描队列
@@ -740,7 +746,9 @@ class FastaBrowser(App):
             seqs, is_done = self._scan_file_quick(fp, fmt, limit=QUICK_LIMIT)
             self.file_tabs.append(FileTab(fp, seqs, fmt))
             if not is_done:
-                self._scan_tasks.append((fp, fmt, len(seqs)))
+                # 直接记录标签页索引：同一路径可打开多次（如目录展开+显式参数），
+                # 按路径反查会错配到首个同名标签页导致数据污染/缺失
+                self._scan_tasks.append((len(self.file_tabs) - 1, fp, fmt, len(seqs)))
 
     @staticmethod
     def _detect_format(filepath: Path) -> FileFormat:
@@ -808,8 +816,11 @@ class FastaBrowser(App):
         避免退出后继续占用 CPU/IO 或向已关闭的事件循环投递更新。
         """
         self._scan_cancelled = True
-        for view in self.query(SequenceView):
-            view.close()
+        try:
+            for view in self.query(SequenceView):
+                view.close()
+        except Exception:  # noqa: BLE001, S110
+            pass  # 应用启动期异常时 screen 栈可能不存在，避免掩盖真实错误
 
     def _background_scan(self):
         """后台扫描剩余序列（在独立线程中运行，避免阻塞 Textual 事件循环）。
@@ -818,10 +829,9 @@ class FastaBrowser(App):
         因此放入 thread worker，每批通过 call_from_thread 回 UI 线程更新。
         """
         BATCH = 200
-        for fp, fmt, start_idx in self._scan_tasks:
+        for tab_idx, fp, fmt, start_idx in self._scan_tasks:
             if self._scan_cancelled:
                 break
-            tab_idx = next(i for i, t in enumerate(self.file_tabs) if t.filepath == fp)
             batch: list[SequenceInfo] = []
 
             for seq_info in _iter_sequences(fp, fmt, start_idx=start_idx):
@@ -829,13 +839,20 @@ class FastaBrowser(App):
                     break
                 batch.append(seq_info)
                 if len(batch) >= BATCH:
-                    self.call_from_thread(self._apply_scan_batch, tab_idx, batch)
+                    self._apply_batch_safe(tab_idx, batch)
                     batch = []
 
             if batch and not self._scan_cancelled:
-                self.call_from_thread(self._apply_scan_batch, tab_idx, batch)
+                self._apply_batch_safe(tab_idx, batch)
 
         self._scan_tasks.clear()
+
+    def _apply_batch_safe(self, tab_idx: int, batch: list[SequenceInfo]):
+        """回 UI 线程应用批次；应用已退出时事件循环已关闭，安全忽略投递失败。"""
+        try:
+            self.call_from_thread(self._apply_scan_batch, tab_idx, batch)
+        except RuntimeError:
+            pass  # App is not running：退出竞态窗口内的残留投递
 
     def _apply_scan_batch(self, tab_idx: int, new_seqs: list[SequenceInfo]):
         """在 UI 线程追加一批扫描结果（数据追加的唯一入口，避免重复）。
@@ -1071,8 +1088,8 @@ class FastaBrowser(App):
             else:  # Windows
                 subprocess.run(["clip"], input=data, check=True)
                 return True
-        except OSError:
-            pass
+        except (OSError, subprocess.CalledProcessError):
+            pass  # 工具缺失或异常退出（非 OSError），回退 OSC 52
         # 回退: OSC 52 —— 通过终端转义序列写入本地剪贴板（需终端支持，SSH 下同样有效）
         try:
             self.copy_to_clipboard(text)
@@ -1144,13 +1161,24 @@ class FastaBrowser(App):
         seq_info = tab.sequences[tab.current_index]
 
         seq_id = seq_info.header.split()[0] if seq_info.header else "unknown"
-        seq_id = seq_id.replace("/", "_").replace("\\", "_")
+        # 净化跨平台非法文件名字符（原仅替换 / \，含 : * ? < > | 时 open 会抛 OSError）
+        seq_id = re.sub(r'[\\/:*?"<>|]', "_", seq_id) or "unknown"
         ext = ".fastq" if tab.file_format == FileFormat.FASTQ else ".fasta"
         out_path = Path(f"{seq_id}{ext}")
+        # 防静默覆盖：目标已存在时自动追加序号
+        if out_path.exists():
+            n = 1
+            while Path(f"{seq_id}_{n}{ext}").exists():
+                n += 1
+            out_path = Path(f"{seq_id}_{n}{ext}")
 
         # 流式写入：边生成边写，内存占用与序列总长无关
-        with open(out_path, "w") as f:
-            f.writelines(self._iter_seq_text())
+        try:
+            with open(out_path, "w") as f:
+                f.writelines(self._iter_seq_text())
+        except OSError as e:
+            self.notify(f"导出失败: {e}", title="导出", severity="error")
+            return
 
         self.notify(f"已导出: {out_path}", title="导出")
 

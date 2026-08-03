@@ -194,3 +194,51 @@ class TestFileBrowserInteraction:
                 await pilot.pause()
                 assert ol.highlighted == initial + 1
         run(_t())
+
+
+# ──────────────────────────────────────────────
+# 序列计数（预览面板数据来源）
+# ──────────────────────────────────────────────
+class TestCountSequences:
+    def test_count_fasta(self, tmp_path):
+        import threading
+        from seqviz.file_browser import count_sequences
+        p = tmp_path / "x.fa"
+        p.write_text("".join(f">s{i}\nACGT\n" for i in range(7)))
+        assert count_sequences(p, FileFormat.FASTA) == 7
+        # 显式传入未置位的取消事件不影响结果
+        assert count_sequences(p, FileFormat.FASTA, threading.Event()) == 7
+
+    def test_count_fastq(self, tmp_path):
+        from seqviz.file_browser import count_sequences
+        p = tmp_path / "x.fastq"
+        p.write_text("".join(f"@r{i}\nACGT\n+\nIIII\n" for i in range(5)))
+        assert count_sequences(p, FileFormat.FASTQ) == 5
+
+    def test_count_gzip(self, tmp_path):
+        import gzip
+        from seqviz.file_browser import count_sequences
+        p = tmp_path / "x.fa.gz"
+        with gzip.open(p, "wt") as f:
+            f.write("".join(f">s{i}\nACGT\n" for i in range(3)))
+        assert count_sequences(p, FileFormat.FASTA) == 3
+
+    def test_count_empty_file(self, tmp_path):
+        from seqviz.file_browser import count_sequences
+        p = tmp_path / "empty.fa"
+        p.write_text("")
+        assert count_sequences(p, FileFormat.FASTA) == 0
+
+    def test_count_missing_file_returns_zero(self, tmp_path):
+        from seqviz.file_browser import count_sequences
+        assert count_sequences(tmp_path / "nope.fa", FileFormat.FASTA) == 0
+
+    def test_cancel_event_interrupts_large_count(self, tmp_path):
+        """取消事件置位后应尽早中断（返回值小于完整计数）。"""
+        import threading
+        from seqviz.file_browser import count_sequences
+        p = tmp_path / "big.fa"
+        p.write_text("".join(f">s{i}\nA\n" for i in range(20000)))
+        ev = threading.Event()
+        ev.set()
+        assert count_sequences(p, FileFormat.FASTA, ev) < 20000

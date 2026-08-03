@@ -156,3 +156,80 @@ class TestHelpCommand:
     def test_view_help(self):
         result = runner.invoke(app, ["view", "--help"])
         assert result.exit_code == 0
+
+
+class TestN50Value:
+    def test_n50_numeric_correctness(self):
+        """N50 数值正确性（回归：此前仅字符串存在断言）。"""
+        from seqviz.cli import _calc_n50
+        # 长度 [20, 12]，总长 32，半值 16；降序累计 20 >= 16 → N50 = 20
+        assert _calc_n50([20, 12], 32) == 20
+        # [100, 50, 30, 20] 总长 200，半值 100；累计 100 >= 100 → N50 = 100
+        assert _calc_n50([100, 50, 30, 20], 200) == 100
+        assert _calc_n50([], 0) == 0
+
+    def test_stats_n50_value_in_output(self):
+        """stats 输出的 N50 应为具体数值（test.fa: 20bp + 12bp → N50=20）。"""
+        result = runner.invoke(app, ["stats", TEST_FA])
+        assert result.exit_code == 0
+        assert "N50" in result.output
+        assert "20" in result.output
+
+
+class TestEmptyFileCli:
+    def test_stats_empty_file(self, tmp_path):
+        """空 FASTA 输入 stats 应友好报错并非零退出。"""
+        p = tmp_path / "empty.fa"
+        p.write_text("")
+        result = runner.invoke(app, ["stats", str(p)])
+        assert result.exit_code != 0
+        assert "没有序列" in result.output
+
+    def test_head_empty_file(self, tmp_path):
+        p = tmp_path / "empty.fa"
+        p.write_text("")
+        result = runner.invoke(app, ["head", str(p)])
+        assert result.exit_code != 0
+        assert "没有序列" in result.output
+
+    def test_fqview_empty_file(self, tmp_path):
+        p = tmp_path / "empty.fastq"
+        p.write_text("")
+        result = runner.invoke(app, ["fqview", str(p)])
+        assert result.exit_code != 0
+        assert "没有序列" in result.output
+
+
+class TestMalformedFastq:
+    def test_trailing_blank_line_tolerated(self, tmp_path):
+        """尾部空行应被跳过而非报格式错误。"""
+        p = tmp_path / "t.fastq"
+        p.write_text("@r1\nACGT\n+\nIIII\n\n")
+        result = runner.invoke(app, ["fqview", str(p)])
+        assert result.exit_code == 0
+        assert "共显示 1 条" in result.output
+
+    def test_invalid_record_friendly_error(self, tmp_path):
+        """非 '@' 开头的记录应友好报错而非裸 traceback。"""
+        p = tmp_path / "bad.fastq"
+        p.write_text(">not_fastq\nACGT\n+\nIIII\n")
+        result = runner.invoke(app, ["fqview", str(p)])
+        assert result.exit_code == 1
+        assert "错误" in result.output
+        assert "Traceback" not in result.output
+
+    def test_non_utf8_header_fqview(self, tmp_path):
+        """非 UTF-8 编码 header 不应 UnicodeDecodeError 崩溃。"""
+        p = tmp_path / "latin1.fastq"
+        p.write_bytes(b"@caf\xe9\nACGT\n+\nIIII\n")
+        result = runner.invoke(app, ["fqview", str(p)])
+        assert result.exit_code == 0
+
+    def test_non_utf8_header_view(self, tmp_path):
+        """view/stats 对 latin-1 header 宽容处理。"""
+        p = tmp_path / "latin1.fa"
+        p.write_bytes(b">caf\xe9 header\nACGT\n")
+        result = runner.invoke(app, ["view", str(p)])
+        assert result.exit_code == 0
+        result = runner.invoke(app, ["stats", str(p)])
+        assert result.exit_code == 0

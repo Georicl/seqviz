@@ -131,7 +131,7 @@ def stats(
     
     if count == 0:
         console.print("[red]文件中没有序列[/red]")
-        raise typer.Exit()
+        raise typer.Exit(code=1)  # 错误路径应非零退出
 
     lengths.sort(reverse=True)
     n50 = _calc_n50(lengths, total_len)
@@ -182,7 +182,7 @@ def head(
     
     if count == 0:
         console.print("[red]文件中没有序列[/red]")
-        raise typer.Exit()
+        raise typer.Exit(code=1)  # 错误路径应非零退出
     
     console.print(f"[dim]共显示 {count} 条序列[/dim]")
 
@@ -195,53 +195,58 @@ def fqview(
     """美化查看 FASTQ 文件（序列 + 质量值对齐着色）"""
     _check_file(file)
     count = 0
-    for header, seq, quality in parse_fastq(str(file)):
-        if n > 0 and count >= n:
-            break
-        
-        count += 1
-        seqtype = detect_seq_type(seq)
-        qstats = quality_stats(quality)
-        
-        # ── header 行：名称 + 类型 + 长度 + 平均质量 ──
-        type_label = "DNA" if seqtype == SeqType.DNA else "Protein" if seqtype == SeqType.PROTEIN else "Unknown"
-        console.print(
-            f"[bold cyan]▶ Read {count}[/bold cyan] "
-            f"[white]{header}[/white] "
-            f"[dim]\\[{type_label}] {len(seq)}bp "
-            f"Q={qstats['mean']:.1f} "
-            f"Q30={qstats['q30_pct']:.0%}[/dim]"
-        )
-        
-        # ── 质量分布条 ──
-        bar = quality_bar(quality, width=wrap)
-        console.print("[dim]Q: [/dim]", end="")
-        console.print(bar)
-        
-        # ── 序列 + 质量值逐行对齐显示（按 chunk 着色） ──
-        for chunk_start in range(0, len(seq), wrap):
-            chunk_end = min(chunk_start + wrap, len(seq))
-            
-            # 位置标尺
-            ruler = position_ruler(chunk_start + 1, chunk_end - chunk_start)
-            console.print("  ", end="")
-            console.print(ruler)
-            
-            # 序列行（按 chunk 着色）
-            console.print("  ", end="")
-            console.print(colorize_sequence(seq[chunk_start:chunk_end], seq_type=seqtype))
-            
-            # 质量行（与序列等宽对齐）
-            console.print("  ", end="")
-            console.print(colorize_quality(quality[chunk_start:chunk_end]))
-            
-            console.print()  # chunk 间小间距
-        
-        console.print()  # read 间空行
+    try:
+        for header, seq, quality in parse_fastq(str(file)):
+            if n > 0 and count >= n:
+                break
+
+            count += 1
+            seqtype = detect_seq_type(seq)
+            qstats = quality_stats(quality)
+
+            # ── header 行：名称 + 类型 + 长度 + 平均质量 ──
+            type_label = "DNA" if seqtype == SeqType.DNA else "Protein" if seqtype == SeqType.PROTEIN else "Unknown"
+            console.print(
+                f"[bold cyan]▶ Read {count}[/bold cyan] "
+                f"[white]{header}[/white] "
+                f"[dim]\\[{type_label}] {len(seq)}bp "
+                f"Q={qstats['mean']:.1f} "
+                f"Q30={qstats['q30_pct']:.0%}[/dim]"
+            )
+
+            # ── 质量分布条 ──
+            bar = quality_bar(quality, width=wrap)
+            console.print("[dim]Q: [/dim]", end="")
+            console.print(bar)
+
+            # ── 序列 + 质量值逐行对齐显示（按 chunk 着色） ──
+            for chunk_start in range(0, len(seq), wrap):
+                chunk_end = min(chunk_start + wrap, len(seq))
+
+                # 位置标尺
+                ruler = position_ruler(chunk_start + 1, chunk_end - chunk_start)
+                console.print("  ", end="")
+                console.print(ruler)
+
+                # 序列行（按 chunk 着色）
+                console.print("  ", end="")
+                console.print(colorize_sequence(seq[chunk_start:chunk_end], seq_type=seqtype))
+
+                # 质量行（与序列等宽对齐）
+                console.print("  ", end="")
+                console.print(colorize_quality(quality[chunk_start:chunk_end]))
+
+                console.print()  # chunk 间小间距
+
+            console.print()  # read 间空行
+    except ValueError as e:
+        # 畸形 FASTQ（非 '@' 开头记录等）：友好报错而非裸 traceback
+        console.print(f"[red]错误: {e}[/red]")
+        raise typer.Exit(code=1) from None
     
     if count == 0:
         console.print("[red]文件中没有序列[/red]")
-        raise typer.Exit()
+        raise typer.Exit(code=1)  # 错误路径应非零退出
     
     console.print(f"[dim]共显示 {count} 条 reads[/dim]")
 

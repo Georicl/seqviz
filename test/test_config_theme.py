@@ -230,3 +230,43 @@ class TestTheme:
         from seqviz.file_browser import FileBrowser
         assert FastaBrowser.TITLE == "Seqviz"
         assert FileBrowser.TITLE == "Seqviz"
+
+
+class TestThemeTypeSafety:
+    def test_theme_json_non_string_values_ignored(self, tmp_path, monkeypatch):
+        """theme.json 颜色字段为非字符串（null/数字/数组）时应被过滤，
+        回退内置值，避免生成非法 CSS 导致应用无法启动。"""
+        theme_file = tmp_path / "theme.json"
+        theme_file.write_text(json.dumps({
+            "background": 123,
+            "foreground": None,
+            "accent": ["#ffffff"],
+            "border": "#ff0000",  # 合法字符串覆盖应保留
+        }))
+        monkeypatch.setattr(theme_mod, "THEME_FILE", theme_file)
+        theme_mod._theme = None
+        theme = theme_mod.load_theme()
+        base = theme_mod.BUILTIN_THEMES[theme_mod.DEFAULT_THEME_NAME]
+        assert theme["background"] == base["background"]  # 123 被过滤
+        assert theme["foreground"] == base["foreground"]  # null 被过滤
+        assert theme["accent"] == base["accent"]          # 数组被过滤
+        assert theme["border"] == "#ff0000"               # 合法覆盖保留
+        # CSS 可正常生成（不抛 StylesheetParseError）
+        assert "#ff0000" in theme_mod.build_browser_css(theme)
+
+
+class TestConfigCopyContract:
+    def test_load_config_returns_independent_copy(self, monkeypatch):
+        """无用户配置时返回值应为独立副本，原地修改不污染全局默认值。"""
+        monkeypatch.setattr(config_mod, "CONFIG_FILE", config_mod.CONFIG_DIR / "__no_such__.json")
+        config_mod._config = None
+        cfg = config_mod.get_config()
+        original = config_mod.DEFAULT_CONFIG["browser"]["wrap_width"]
+        cfg["browser"]["wrap_width"] = 999
+        assert config_mod.DEFAULT_CONFIG["browser"]["wrap_width"] == original
+
+    def test_reload_config_resets_theme_singleton(self):
+        """reload_config 应同步刷新 theme 单例（重载语义一致）。"""
+        theme_mod._theme = {"sentinel": True}
+        config_mod.reload_config()
+        assert theme_mod._theme is None

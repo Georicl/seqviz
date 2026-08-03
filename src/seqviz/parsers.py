@@ -14,7 +14,7 @@ def parse_fasta(filepath: str | Path) -> Generator[tuple[str, str], None, None]:
     header = None
     seq_parts: list[str] = []
 
-    with opener(filepath, "rt") as f:
+    with opener(filepath, "rt", encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.rstrip("\n")
 

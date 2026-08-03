@@ -11,13 +11,16 @@ def parse_fastq(filepath: str | Path) -> Generator[tuple[str, str, str], None, N
     filepath = Path(filepath)
     opener = gzip.open if filepath.suffix.lower() == ".gz" else open
     
-    with opener(filepath, "rt") as f:
+    with opener(filepath, "rt", encoding="utf-8", errors="replace") as f:
         while True:
             header_line = f.readline()
             if not header_line:
                 break  # EOF
-            
+
             header_line = header_line.rstrip("\n")
+            if not header_line.strip():
+                continue  # 跳过空行（尾部空行/空行分隔），避免报格式错误
+
             seq = f.readline().rstrip("\n")
             f.readline()  # "+" 分隔符，跳过
             quality = f.readline().rstrip("\n")
