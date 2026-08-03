@@ -143,6 +143,37 @@ class TestBrowseCommand:
         assert result.exit_code == 0
         assert captured["n_tabs"] == 1
 
+    def test_browse_vcf_routes_to_vcf_browser(self, monkeypatch):
+        """browse 单个 .vcf 应路由到 VcfBrowser 而非 FastaBrowser。"""
+        import seqviz.cli as cli_mod
+        from seqviz import vcf_browser as vcf_browser_mod
+        called: dict = {}
+
+        def fake_vcf_run(self):
+            called["vcf"] = str(self.filepath)
+
+        def fake_fasta_run(self):
+            called["fasta"] = True
+
+        monkeypatch.setattr(vcf_browser_mod.VcfBrowser, "run", fake_vcf_run)
+        monkeypatch.setattr(cli_mod.FastaBrowser, "run", fake_fasta_run)
+        vcf_path = str(Path(__file__).parent / "sample.vcf")
+        result = runner.invoke(app, ["browse", vcf_path])
+        assert result.exit_code == 0
+        assert called.get("vcf") == vcf_path
+        assert "fasta" not in called
+
+    def test_is_vcf_helper(self, tmp_path):
+        """_is_vcf 辅助函数：后缀判定（大小写不敏感），不存在/非文件为 False。"""
+        from seqviz.cli import _is_vcf
+        f = tmp_path / "x.VCF"
+        f.write_text("")
+        assert _is_vcf(f) is True
+        fa = tmp_path / "x.fa"
+        fa.write_text("")
+        assert _is_vcf(fa) is False
+        assert _is_vcf(tmp_path / "missing.vcf") is False
+
 
 class TestHelpCommand:
     def test_main_help(self):

@@ -46,8 +46,13 @@ def detect_file_format(path: Path) -> FileFormat:
     return detect_format(path)
 
 
+def is_vcf_file(path: Path) -> bool:
+    """判断是否为未压缩 VCF 文件。"""
+    return path.is_file() and path.suffix.lower() == ".vcf"
+
+
 def count_sequences(path: Path, fmt: FileFormat, cancel_event: threading.Event | None = None) -> int:
-    """快速统计序列条数。FASTA 数 '>' 行，FASTQ 按 4 行一组。
+    """快速统计序列条数。FASTA 数 '>' 行，FASTQ 按 4 行一组，VCF 数非注释数据行。
 
     cancel_event 置位时在读取间隙尽早中断（返回已统计部分），
     避免 GB 级文件预览后退出时进程挂起直到整文件读完。
@@ -55,7 +60,17 @@ def count_sequences(path: Path, fmt: FileFormat, cancel_event: threading.Event |
     opener = gzip.open if path.suffix.lower() == ".gz" else open
     count = 0
     try:
-        if fmt == FileFormat.FASTQ:
+        if is_vcf_file(path):
+            # VCF: 数非 '#' 开头的非空行（即变异记录数）
+            lines = 0
+            with opener(path, "rb") as f:
+                for line in f:
+                    lines += 1
+                    if line and not line.startswith(b"#") and line.strip():
+                        count += 1
+                    if cancel_event is not None and lines % 16384 == 0 and cancel_event.is_set():
+                        return count
+        elif fmt == FileFormat.FASTQ:
             # FASTQ: 每 4 行一条记录，数行数除以 4
             lines = 0
             with opener(path, "rb") as f:
@@ -131,7 +146,9 @@ class FilePreview(Static):
             self.update(Text("  无文件", style="dim"))
             return
 
-        fmt_label = "FASTQ" if info.fmt == FileFormat.FASTQ else "FASTA"
+        is_vcf = is_vcf_file(info.path)
+        fmt_label = "VCF" if is_vcf else ("FASTQ" if info.fmt == FileFormat.FASTQ else "FASTA")
+        count_label = "变异数" if is_vcf else "序列数"
         content = Text()
         content.append("\n  文件详情\n\n", style="bold cyan")
         content.append("  名称: ", style="dim")
@@ -142,7 +159,7 @@ class FilePreview(Static):
         content.append(f"{info.size_str}\n", style="yellow")
         content.append("  格式: ", style="dim")
         content.append(f"{fmt_label}\n", style="magenta")
-        content.append("  序列数: ", style="dim")
+        content.append(f"  {count_label}: ", style="dim")
         if info.seq_count is None:
             content.append("统计中...\n", style="dim")
         else:
@@ -204,8 +221,12 @@ class FileBrowser(App):
                 label.append(" ✓ ", style="bold green")
             else:
                 label.append("   ", style="dim")
-            fmt_tag = "Q" if info.fmt == FileFormat.FASTQ else "F"
-            label.append(f"[{fmt_tag}] ", style="cyan" if fmt_tag == "Q" else "magenta")
+            if is_vcf_file(info.path):
+                fmt_tag = "V"
+            else:
+                fmt_tag = "Q" if info.fmt == FileFormat.FASTQ else "F"
+            tag_style = {"Q": "cyan", "F": "magenta", "V": "green"}[fmt_tag]
+            label.append(f"[{fmt_tag}] ", style=tag_style)
             label.append(info.name, style="bold")
             label.append(f"  ({info.size_str})", style="dim")
             option_list.add_option(Option(label, id=f"file-{i}"))

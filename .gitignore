@@ -30,5 +30,4 @@ test/__pycache__/
 .qoder/
 
 # 未入库的测试样本/临时文件
-test/sample.vcf
 test/Weixin*

@@ -31,7 +31,8 @@
       ".aa",
       ".seq",
       ".fq",
-      ".fastq"
+      ".fastq",
+      ".vcf"
     ]
   }
 }

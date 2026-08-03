@@ -36,6 +36,7 @@ DEFAULT_CONFIG: dict = {
         "extensions": [
             ".fa", ".fasta", ".fna", ".faa", ".aa", ".seq",
             ".fq", ".fastq",
+            ".vcf",
         ],
     },
 }

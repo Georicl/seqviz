@@ -32,11 +32,23 @@ def _check_file(file: Path) -> Path:
     return file
 
 
+def _is_vcf(path: Path) -> bool:
+    """判断是否为 VCF 文件（仅支持未压缩 .vcf）。"""
+    return path.is_file() and path.suffix.lower() == ".vcf"
+
+
 def _launch_browser(paths: list[Path]):
     """根据路径启动浏览器：目录走文件选择器，文件直接打开。
 
     支持从序列浏览器按 B 返回文件选择器（循环）。
+    单个 .vcf 文件路由到 VcfBrowser。
     """
+    # 单文件且为 .vcf → VCF 变异浏览器
+    if len(paths) == 1 and _is_vcf(paths[0]):
+        from seqviz.vcf_browser import VcfBrowser
+        VcfBrowser(paths[0]).run()
+        return
+
     source_dir: Path | None = None
 
     # 单个目录 → 记住来源目录，走文件选择器流程
@@ -66,6 +78,12 @@ def _launch_browser(paths: list[Path]):
         if not open_paths:
             console.print("[red]没有找到可打开的序列文件[/red]")
             raise typer.Exit()
+
+        # 选中结果若为单个 .vcf → 路由到 VcfBrowser
+        if len(open_paths) == 1 and _is_vcf(open_paths[0]):
+            from seqviz.vcf_browser import VcfBrowser
+            VcfBrowser(open_paths[0]).run()
+            break
 
         # 运行序列浏览器；按 B 返回 "back" 则重新进入文件选择器
         result = FastaBrowser(open_paths, source_dir=source_dir).run()
@@ -255,7 +273,7 @@ def fqview(
 def browse(
     files: list[Path] = typer.Argument(help="FASTA/FASTQ 文件或目录路径（目录会启动文件选择器）"),
 ):
-    """交互式浏览 FASTA/FASTQ 文件（支持多文件标签页、目录浏览）。"""
+    """交互式浏览 FASTA/FASTQ/VCF 文件（支持多文件标签页、目录浏览）。"""
     for p in files:  # 校验路径存在，与其他子命令的友好报错保持一致
         if not p.exists():
             console.print(f"[red]错误: 路径不存在: {p}[/red]")
