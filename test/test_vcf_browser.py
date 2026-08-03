@@ -37,7 +37,8 @@ class TestLaunch:
                 assert "sample1" in text  # 逐样本基因型已加载
         run(_t())
 
-    def test_empty_vcf(self, tmp_path):
+    def test_empty_vcf_app_level_graceful(self, tmp_path):
+        """App 层面对空文件仍可优雅打开（CLI 层拦截报错，见 test_cli）。"""
         f = tmp_path / "empty.vcf"
         f.write_text("")
         async def _t():
@@ -207,6 +208,9 @@ class TestMatrixInfoCopy:
                 text = str(detail.render())
                 assert "VCFv4.3" in text
                 assert "chr1" in text
+                # 规格要求：INFO/FORMAT 字段定义也要展示
+                assert "Total Depth" in text      # ##INFO DP 的 Description
+                assert "Genotype" in text         # ##FORMAT GT 的 Description
         run(_t())
 
     def test_copy_line_records_raw(self):
@@ -230,4 +234,81 @@ class TestMatrixInfoCopy:
                 await pilot.press("q")
                 await pilot.pause()
                 assert len(app.screen_stack) == 1  # q 只关闭帮助屏，不退出
+        run(_t())
+
+
+# ──────────────────────────────────────────────
+# 大文件窗口化虚拟化（回归：全量重建 OptionList 冻结 UI）
+# ──────────────────────────────────────────────
+class TestWindowedVirtualization:
+    @staticmethod
+    def _make_big_vcf(tmp_path, n=5000):
+        lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"]
+        for i in range(n):
+            lines.append(f"chr1\t{1000 + i}\t.\tA\tG\t50.0\tPASS\tDP=10")
+        f = tmp_path / "big.vcf"
+        f.write_text("\n".join(lines) + "\n")
+        return f
+
+    def test_window_caps_materialized_options(self, tmp_path):
+        """列表只物化 WINDOW 条，而非全量。"""
+        f = self._make_big_vcf(tmp_path)
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                ol = app.query_one("#variant-list", OptionList)
+                assert len(app.view) == 5000
+                assert ol.option_count == app.WINDOW  # 只物化窗口
+        run(_t())
+
+    def test_G_jumps_to_last_across_windows(self, tmp_path):
+        """G 键跨窗口跳到最后一条，绝对下标正确。"""
+        f = self._make_big_vcf(tmp_path)
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                await pilot.press("G")
+                await pilot.pause()
+                assert app._abs_index() == 4999
+                assert "5,999" in app._detail_text()  # 最后一条 pos=1000+4999（千分位）
+                await pilot.press("g")
+                await pilot.pause()
+                assert app._abs_index() == 0
+        run(_t())
+
+    def test_filter_rebuild_is_windowed(self, tmp_path):
+        """过滤切换后列表仍只物化窗口大小（不再全量重建）。"""
+        f = self._make_big_vcf(tmp_path)
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                await pilot.press("f")  # PASS only（全部 PASS）
+                await pilot.pause()
+                ol = app.query_one("#variant-list", OptionList)
+                assert len(app.view) == 5000
+                assert ol.option_count == app.WINDOW
+        run(_t())
+
+
+# ──────────────────────────────────────────────
+# 染色体排序（回归：chr10 字典序排在 chr2 前）
+# ──────────────────────────────────────────────
+class TestChromNaturalSort:
+    def test_position_sort_natural_order(self, tmp_path):
+        f = tmp_path / "sort.vcf"
+        f.write_text(
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+            "chr10\t100\t.\tA\tG\t50\tPASS\t.\n"
+            "chr2\t50\t.\tA\tG\t50\tPASS\t.\n"
+            "chr1\t999\t.\tA\tG\t50\tPASS\t.\n"
+        )
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                order = [app.variants[i].chrom for i in app.view]
+                assert order == ["chr1", "chr2", "chr10"]  # 非字典序的 chr1,chr10,chr2
         run(_t())

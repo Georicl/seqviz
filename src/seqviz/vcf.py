@@ -47,11 +47,17 @@ class VcfMeta:
     format_defs: dict = field(default_factory=dict)
     filter_defs: dict = field(default_factory=dict)
     samples: list = field(default_factory=list)
+    has_header: bool = False    # 是否存在 #CHROM 表头行（无效文件判定的依据）
 
 
 def classify_variant(ref: str, alt: str) -> VariantType:
-    """按 REF/ALT 长度与碱基判定变异类型；多等位取第一个 ALT。"""
+    """按 REF/ALT 长度与碱基判定变异类型；多等位取第一个 ALT。
+
+    符号等位基因（<DEL>/<INS>/*）判为 COMPLEX，避免污染 SNP/InDel 计数与 Ts/Tv。
+    """
     first_alt = alt.split(",")[0]
+    if first_alt.startswith("<") or first_alt in ("*", "."):
+        return VariantType.COMPLEX
     ref_u, alt_u = ref.upper(), first_alt.upper()
     if len(ref) == 1 and len(first_alt) == 1:
         return VariantType.TRANSITION if (ref_u, alt_u) in _TRANSITIONS else VariantType.TRANSVERSION
@@ -167,6 +173,7 @@ def scan_vcf(path) -> tuple[VcfMeta, list[Variant], int]:
     header_lines: list[str] = []
     variants: list[Variant] = []
     sample_names: list[str] = []
+    has_header = False
     skipped = 0
     with open(path, encoding="utf-8", errors="replace") as f:
         while True:
@@ -178,6 +185,7 @@ def scan_vcf(path) -> tuple[VcfMeta, list[Variant], int]:
                 header_lines.append(line)
                 continue
             if line.startswith("#CHROM"):
+                has_header = True
                 cols = line.rstrip("\n").split("\t")
                 sample_names = cols[9:] if len(cols) > 9 else []
                 continue
@@ -206,6 +214,7 @@ def scan_vcf(path) -> tuple[VcfMeta, list[Variant], int]:
             ))
     meta = parse_meta(header_lines)
     meta.samples = sample_names
+    meta.has_header = has_header
     return meta, variants, skipped
 
 

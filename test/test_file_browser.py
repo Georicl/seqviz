@@ -41,6 +41,17 @@ class TestFileDetection:
         f.write_bytes(b"")
         assert is_sequence_file(f)
 
+    def test_vcf_recognized(self, tmp_path):
+        f = tmp_path / "var.vcf"
+        f.write_text("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+        assert is_sequence_file(f)
+
+    def test_vcf_gz_excluded(self, tmp_path):
+        """压缩 VCF 暂不支持，不应被列入文件选择器（避免误标为 FASTA/计数0）。"""
+        f = tmp_path / "var.vcf.gz"
+        f.write_bytes(b"")
+        assert not is_sequence_file(f)
+
     def test_non_sequence_file(self, tmp_path):
         f = tmp_path / "notes.txt"
         f.write_text("hello")

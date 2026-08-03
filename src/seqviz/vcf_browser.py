@@ -3,6 +3,7 @@
 设计文档: docs/superpowers/specs/2026-07-25-vcf-visualization-design.md
 """
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -42,6 +43,11 @@ _TYPE_LABEL = {
 _GT_LABEL = {"0/0": "纯合参考", "0/1": "杂合", "1/0": "杂合", "1/1": "纯合变异"}
 _GT_MATRIX_STYLE = {"0/0": "dim", "0/1": "yellow", "1/0": "yellow", "1/1": "bold red"}
 _FILTER_CYCLE = ["全部", "PASS", "SNP", "InDel"]
+
+
+def _chrom_sort_key(chrom: str):
+    """数字感知的染色体排序键：chr2 < chr10，非数字段按字典序。"""
+    return tuple(int(p) if p.isdigit() else p for p in re.split(r"(\d+)", chrom))
 
 
 class HelpScreen(ModalScreen):
@@ -112,11 +118,22 @@ class VcfBrowser(App):
         Binding("q", "quit", "退出", show=True),
     ]
 
-    def __init__(self, filepath: Path):
+    # 列表窗口化虚拟化：OptionList 只物化当前窗口，避免大文件全量重建冻结 UI
+    WINDOW = 2000
+    PAGE = 20
+
+    def __init__(self, filepath: Path, scanned=None):
         super().__init__()
         self.filepath = filepath
-        self.meta, self.variants, self.skipped = scan_vcf(filepath)
+        if scanned is not None:
+            self.meta, self.variants, self.skipped = scanned
+        else:
+            self.meta, self.variants, self.skipped = scan_vcf(filepath)
         self.view: list[int] = list(range(len(self.variants)))  # 过滤/排序后的下标映射
+        # 默认按位置排序（数字感知），即使文件本身未按坐标排序
+        self.view.sort(key=lambda i: (
+            _chrom_sort_key(self.variants[i].chrom), self.variants[i].pos))
+        self._win_start = 0  # 当前窗口在 view 中的起始下标
         self.filter_mode = "全部"
         self.sort_mode = "位置"
         self.matrix_mode = False
@@ -160,15 +177,42 @@ class VcfBrowser(App):
         return Option(line)
 
     def _refresh_list(self):
-        ol = self.query_one("#variant-list", OptionList)
-        ol.clear_options()
-        ol.add_options([self._make_option(self.variants[i]) for i in self.view])
+        self._win_start = 0
+        self._rebuild_window(0, highlight_abs=0)
         if self.view:
-            ol.highlighted = 0
             self._show_detail(0)
         else:
             self.query_one("#detail", Static).update(Text("（无匹配变异）", style="dim"))
         self._update_status_bar()
+
+    def _rebuild_window(self, win_start: int, highlight_abs: int):
+        """重建 OptionList 窗口（只物化 view[win_start:win_start+WINDOW]）。"""
+        self._win_start = max(0, min(win_start, len(self.view)))
+        ol = self.query_one("#variant-list", OptionList)
+        ol.clear_options()
+        ol.add_options([
+            self._make_option(self.variants[i])
+            for i in self.view[self._win_start:self._win_start + self.WINDOW]
+        ])
+        if ol.option_count:
+            ol.highlighted = max(0, min(highlight_abs - self._win_start, ol.option_count - 1))
+
+    def _abs_index(self) -> int:
+        """当前高亮项在 view 中的绝对下标。"""
+        ol = self.query_one("#variant-list", OptionList)
+        return self._win_start + (ol.highlighted or 0)
+
+    def _goto_abs(self, target: int):
+        """跳转到 view 中的绝对下标（必要时平移窗口）。"""
+        if not self.view:
+            return
+        target = max(0, min(target, len(self.view) - 1))
+        materialized = min(self.WINDOW, len(self.view) - self._win_start)
+        if self._win_start <= target < self._win_start + materialized:
+            self.query_one("#variant-list", OptionList).highlighted = target - self._win_start
+        else:
+            new_start = min(max(target - self.WINDOW // 2, 0), max(0, len(self.view) - self.WINDOW))
+            self._rebuild_window(new_start, target)
 
     # ── 详情渲染 ──
     def _build_detail(self, v: Variant) -> Text:
@@ -241,8 +285,7 @@ class VcfBrowser(App):
         """当前详情的纯文本（供测试断言）。"""
         if not self.view:
             return ""
-        ol = self.query_one("#variant-list", OptionList)
-        v = self.variants[self.view[ol.highlighted or 0]]
+        v = self.variants[self.view[self._abs_index()]]
         load_variant_detail(self.filepath, v, self.meta.samples)
         return str(self._build_detail(v))
 
@@ -272,8 +315,7 @@ class VcfBrowser(App):
         return txt
 
     def _matrix_text(self) -> str:
-        ol = self.query_one("#variant-list", OptionList)
-        return str(self._build_matrix(ol.highlighted or 0))
+        return str(self._build_matrix(self._abs_index()))
 
     def _render_matrix(self, list_index: int):
         self.query_one("#detail", Static).update(self._build_matrix(list_index))
@@ -309,7 +351,9 @@ class VcfBrowser(App):
                 self.variants[i].qual is None,
                 -(self.variants[i].qual or 0.0)))
         else:
-            idxs.sort(key=lambda i: (self.variants[i].chrom, self.variants[i].pos))
+            # 数字感知染色体排序（chr2 < chr10）
+            idxs.sort(key=lambda i: (
+                _chrom_sort_key(self.variants[i].chrom), self.variants[i].pos))
         self.view = idxs
         self._refresh_list()
 
@@ -377,8 +421,7 @@ class VcfBrowser(App):
             coord = f"{v.chrom}:{v.pos}".lower()
             coord_comma = f"{v.chrom}:{v.pos:,}".lower()
             if q == v.id.lower() or q in (coord, coord_comma) or q in v.id.lower():
-                ol = self.query_one("#variant-list", OptionList)
-                ol.highlighted = li
+                self._goto_abs(li)
                 self.notify(f"找到: {v.chrom}:{v.pos:,} {v.id or ''}".strip(), title="搜索")
                 return
         self.notify(f"未找到匹配 \"{value}\"", title="搜索", severity="warning")
@@ -397,28 +440,27 @@ class VcfBrowser(App):
     # ── 事件 ──
     def on_option_list_option_highlighted(self, event) -> None:
         if event.option is not None:
-            self._show_detail(event.option_index)
+            # 窗口内下标 → view 绝对下标
+            self._show_detail(self._win_start + event.option_index)
 
     # ── Actions ──
     def action_cursor_down(self):
-        self.query_one("#variant-list", OptionList).action_cursor_down()
+        self._goto_abs(self._abs_index() + 1)
 
     def action_cursor_up(self):
-        self.query_one("#variant-list", OptionList).action_cursor_up()
+        self._goto_abs(self._abs_index() - 1)
 
     def action_page_down(self):
-        self.query_one("#variant-list", OptionList).action_page_down()
+        self._goto_abs(self._abs_index() + self.PAGE)
 
     def action_page_up(self):
-        self.query_one("#variant-list", OptionList).action_page_up()
+        self._goto_abs(self._abs_index() - self.PAGE)
 
     def action_home(self):
-        self.query_one("#variant-list", OptionList).highlighted = 0
+        self._goto_abs(0)
 
     def action_end(self):
-        ol = self.query_one("#variant-list", OptionList)
-        if ol.option_count:
-            ol.highlighted = ol.option_count - 1
+        self._goto_abs(len(self.view) - 1)
 
     async def action_search(self):
         await self._show_search_bar()
@@ -436,8 +478,7 @@ class VcfBrowser(App):
 
     def action_toggle_view(self):
         self.matrix_mode = not self.matrix_mode
-        ol = self.query_one("#variant-list", OptionList)
-        self._show_detail(ol.highlighted or 0)
+        self._show_detail(self._abs_index())
 
     def action_file_info(self):
         txt = Text()
@@ -460,14 +501,21 @@ class VcfBrowser(App):
             txt.append("\nFILTER 定义:\n", style="bold cyan")
             for fid, desc in self.meta.filter_defs.items():
                 txt.append(f"  {fid:<10}{desc}\n")
+        if self.meta.info_defs:
+            txt.append("\nINFO 定义:\n", style="bold cyan")
+            for iid, desc in self.meta.info_defs.items():
+                txt.append(f"  {iid:<10}{desc}\n")
+        if self.meta.format_defs:
+            txt.append("\nFORMAT 定义:\n", style="bold cyan")
+            for fid, desc in self.meta.format_defs.items():
+                txt.append(f"  {fid:<10}{desc}\n")
         self.query_one("#detail", Static).update(txt)
 
     def action_copy_line(self):
         if not self.view:
             self.notify("没有可复制的变异", severity="warning")
             return
-        ol = self.query_one("#variant-list", OptionList)
-        v = self.variants[self.view[ol.highlighted or 0]]
+        v = self.variants[self.view[self._abs_index()]]
         load_variant_detail(self.filepath, v, self.meta.samples)
         ok = self._copy_to_clipboard(v.raw)
         self._last_copied = v.raw

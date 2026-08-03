@@ -37,6 +37,23 @@ def _is_vcf(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() == ".vcf"
 
 
+def _run_vcf_browser(path: Path):
+    """扫描并启动 VCF 浏览器；空文件/无 #CHROM 表头时友好报错非零退出。
+
+    扫描结果直接传给 VcfBrowser，避免重复扫描大文件。
+    """
+    from seqviz.vcf import scan_vcf
+    from seqviz.vcf_browser import VcfBrowser
+    meta, variants, skipped = scan_vcf(path)
+    if not meta.has_header:
+        console.print(f"[red]错误: 不是有效的 VCF 文件（缺少 #CHROM 表头）: {path}[/red]")
+        raise typer.Exit(code=1)
+    if not variants:
+        console.print(f"[red]错误: VCF 文件中没有变异记录: {path}[/red]")
+        raise typer.Exit(code=1)
+    VcfBrowser(path, scanned=(meta, variants, skipped)).run()
+
+
 def _launch_browser(paths: list[Path]):
     """根据路径启动浏览器：目录走文件选择器，文件直接打开。
 
@@ -45,8 +62,7 @@ def _launch_browser(paths: list[Path]):
     """
     # 单文件且为 .vcf → VCF 变异浏览器
     if len(paths) == 1 and _is_vcf(paths[0]):
-        from seqviz.vcf_browser import VcfBrowser
-        VcfBrowser(paths[0]).run()
+        _run_vcf_browser(paths[0])
         return
 
     source_dir: Path | None = None
@@ -81,9 +97,19 @@ def _launch_browser(paths: list[Path]):
 
         # 选中结果若为单个 .vcf → 路由到 VcfBrowser
         if len(open_paths) == 1 and _is_vcf(open_paths[0]):
-            from seqviz.vcf_browser import VcfBrowser
-            VcfBrowser(open_paths[0]).run()
+            _run_vcf_browser(open_paths[0])
             break
+
+        # VCF 暂不支持与序列文件混合打开：剥离并提示，避免在 FastaBrowser 中产生静默空标签页
+        mixed_vcfs = [p for p in open_paths if _is_vcf(p)]
+        if mixed_vcfs and len(open_paths) > 1:
+            console.print("[yellow]VCF 文件暂不支持与其他文件混合打开，已跳过: "
+                          + ", ".join(p.name for p in mixed_vcfs) + "[/yellow]")
+            open_paths = [p for p in open_paths if not _is_vcf(p)]
+            if not open_paths:
+                if source_dir is not None:
+                    continue  # 回到文件选择器重新选择
+                raise typer.Exit()
 
         # 运行序列浏览器；按 B 返回 "back" 则重新进入文件选择器
         result = FastaBrowser(open_paths, source_dir=source_dir).run()

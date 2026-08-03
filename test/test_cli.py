@@ -174,6 +174,41 @@ class TestBrowseCommand:
         assert _is_vcf(fa) is False
         assert _is_vcf(tmp_path / "missing.vcf") is False
 
+    def test_browse_empty_vcf_friendly_error(self, tmp_path):
+        """空 VCF：友好报错并非零退出（对齐现有空文件策略）。"""
+        f = tmp_path / "empty.vcf"
+        f.write_text("")
+        result = runner.invoke(app, ["browse", str(f)])
+        assert result.exit_code != 0
+        assert "缺少 #CHROM 表头" in result.output
+
+    def test_browse_header_only_vcf_friendly_error(self, tmp_path):
+        """有表头但无变异记录：友好报错并非零退出。"""
+        f = tmp_path / "hdr.vcf"
+        f.write_text("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+        result = runner.invoke(app, ["browse", str(f)])
+        assert result.exit_code != 0
+        assert "没有变异记录" in result.output
+
+    def test_browse_mixed_vcf_and_fasta_skips_vcf(self, tmp_path, monkeypatch):
+        """VCF 与序列文件混合打开：VCF 被剥离并提示，FastaBrowser 只收到序列文件。"""
+        import seqviz.cli as cli_mod
+        fa = tmp_path / "x.fa"
+        fa.write_text(">s1\nATCG\n")
+        vcf = tmp_path / "x.vcf"
+        vcf.write_text("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+                       "chr1\t1\t.\tA\tG\t50\tPASS\t.\n")
+        captured: dict = {}
+
+        def fake_fasta_run(self):
+            captured["paths"] = [str(t.filepath) for t in self.file_tabs]
+
+        monkeypatch.setattr(cli_mod.FastaBrowser, "run", fake_fasta_run)
+        result = runner.invoke(app, ["browse", str(vcf), str(fa)])
+        assert result.exit_code == 0
+        assert "混合打开" in result.output  # 提示信息已输出
+        assert captured["paths"] == [str(fa)]  # VCF 未进入 FastaBrowser
+
 
 class TestHelpCommand:
     def test_main_help(self):

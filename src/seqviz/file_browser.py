@@ -31,13 +31,13 @@ def _get_seq_extensions() -> set:
 
 
 def is_sequence_file(path: Path) -> bool:
-    """判断是否为序列文件（支持 .gz 双后缀）。"""
+    """判断是否为序列文件（支持 .gz 双后缀；压缩 VCF 暂不支持不列出）。"""
     if not path.is_file():
         return False
     exts = _get_seq_extensions()
     if path.suffix.lower() == ".gz":
         inner_suffix = Path(path.stem).suffix.lower()
-        return inner_suffix in exts
+        return inner_suffix in exts and inner_suffix != ".vcf"
     return path.suffix.lower() in exts
 
 

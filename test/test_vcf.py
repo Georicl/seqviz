@@ -44,6 +44,13 @@ class TestClassifyVariant:
     def test_case_insensitive(self):
         assert classify_variant("a", "g") == VariantType.TRANSITION
 
+    def test_symbolic_alleles_are_complex(self):
+        """符号等位基因（SV caller / gVCF）不污染 SNP/InDel 计数与 Ts/Tv。"""
+        assert classify_variant("A", "<DEL>") == VariantType.COMPLEX
+        assert classify_variant("A", "<INS>") == VariantType.COMPLEX
+        assert classify_variant("A", "*") == VariantType.COMPLEX
+        assert classify_variant("A", "<DUP>,G") == VariantType.COMPLEX  # 多等位取首个
+
 
 class TestParseGenotype:
     def test_full_fields(self):
@@ -121,6 +128,7 @@ class TestScanVcf:
         assert len(variants) == 18
         assert skipped == 0
         assert meta.samples == ["sample1", "sample2", "sample3"]
+        assert meta.has_header is True
         first = variants[0]
         assert (first.chrom, first.pos, first.ref, first.alt) == ("chr1", 10234, "A", "G")
         assert first.info["AF"] == "0.333"   # INFO 在索引阶段已解析
@@ -132,6 +140,7 @@ class TestScanVcf:
         f.write_text("")
         meta, variants, skipped = scan_vcf(f)
         assert variants == [] and meta.samples == []
+        assert meta.has_header is False  # 无效文件判定依据
 
     def test_no_header_line(self, tmp_path):
         f = tmp_path / "nohdr.vcf"
