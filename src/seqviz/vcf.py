@@ -15,6 +15,29 @@ _ID_RE = re.compile(r"ID=([^,>]+)")
 _DESC_RE = re.compile(r'Description="([^"]*)"')
 _LEN_RE = re.compile(r"length=(\d+)")
 
+# 坐标查询：chr1:10000 / chr1:10000-20000 / chr1:10000..20000（支持千分位逗号与空格）
+_COORD_RE = re.compile(
+    r"^\s*([^\s:]+)\s*:\s*(\d[\d,]*)(?:\s*(?:-|\.\.)\s*(\d[\d,]*))?\s*$"
+)
+
+
+def parse_coord_query(text: str) -> tuple[str, int, int | None] | None:
+    """解析坐标/范围查询字符串。
+
+    支持：chr1:10000、chr1:10000-20000、chr1:10000..20000、chr1:10,000（千分位）。
+    返回 (chrom, start, end)；end 为 None 表示单坐标；无法解析返回 None。
+    起止顺序颠倒时自动交换。
+    """
+    m = _COORD_RE.match(text or "")
+    if not m:
+        return None
+    chrom = m.group(1)
+    start = int(m.group(2).replace(",", ""))
+    end = int(m.group(3).replace(",", "")) if m.group(3) else None
+    if end is not None and end < start:
+        start, end = end, start
+    return chrom, start, end
+
 
 class VariantType(Enum):
     TRANSITION = "transition"      # 转换（嘌呤↔嘌呤 / 嘧啶↔嘧啶）

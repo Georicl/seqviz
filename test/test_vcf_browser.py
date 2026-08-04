@@ -5,7 +5,7 @@ from pathlib import Path
 from textual.widgets import OptionList
 
 from seqviz.vcf import scan_vcf_quick
-from seqviz.vcf_browser import VcfBrowser
+from seqviz.vcf_browser import VcfBrowser, AbsoluteScrollbar
 
 TEST_DIR = Path(__file__).parent
 SAMPLE_VCF = TEST_DIR / "sample.vcf"
@@ -452,6 +452,205 @@ class TestEndAfterScan:
                 ol.scroll_up()
                 await pilot.pause()
                 assert app._abs_index() == 0
+        run(_t())
+
+
+# ──────────────────────────────────────────────
+# 坐标/范围跳转（/ 命令栏）
+# ──────────────────────────────────────────────
+class TestCoordJump:
+    @staticmethod
+    def _capture_notify(app) -> list:
+        """包装 app.notify 捕获消息（Notifications 对象不提供读取接口）。"""
+        msgs: list = []
+        orig = app.notify
+
+        def capture(message, *args, **kwargs):
+            msgs.append(str(message))
+            return orig(message, *args, **kwargs)
+
+        app.notify = capture
+        return msgs
+
+    async def _search(self, pilot, query: str):
+        await pilot.press("slash")
+        await pilot.pause()
+        await pilot.press(*query)
+        await pilot.press("enter")
+        await pilot.pause()
+
+    def test_exact_coord_jump(self):
+        """精确坐标：chr1:15892 命中 rs67890。"""
+        async def _t():
+            app = VcfBrowser(SAMPLE_VCF)
+            msgs = self._capture_notify(app)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                await self._search(pilot, "chr1:15892")
+                v = app.variants[app.view[app._abs_index()]]
+                assert (v.chrom, v.pos, v.id) == ("chr1", 15892, "rs67890")
+                assert "跳转到 chr1:15,892" in msgs[-1]
+        run(_t())
+
+    def test_nearest_coord_jump(self):
+        """最近邻：chr1:10300 → 10234（跞66）而非 10567（跞267）。"""
+        async def _t():
+            app = VcfBrowser(SAMPLE_VCF)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                await self._search(pilot, "chr1:10300")
+                v = app.variants[app.view[app._abs_index()]]
+                assert v.pos == 10234
+                # 反方向最近邻：10500 → 10567
+                await self._search(pilot, "chr1:10500")
+                v = app.variants[app.view[app._abs_index()]]
+                assert v.pos == 10567
+        run(_t())
+
+    def test_range_jump_first_in_range(self, tmp_path):
+        """范围跳转：命中区间内第一个变异（两种分隔符）。"""
+        async def _t():
+            app = VcfBrowser(SAMPLE_VCF)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                await self._search(pilot, "chr1:11000-40000")
+                v = app.variants[app.view[app._abs_index()]]
+                assert v.pos == 15892  # [11000,40000] 内第一条
+                await self._search(pilot, "chr2:20000..50000")
+                v = app.variants[app.view[app._abs_index()]]
+                assert (v.chrom, v.pos) == ("chr2", 23456)
+        run(_t())
+
+    def test_range_no_match_warns(self):
+        """范围内无变异：提示该范围内无变异。"""
+        async def _t():
+            app = VcfBrowser(SAMPLE_VCF)
+            msgs = self._capture_notify(app)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                await self._search(pilot, "chr1:50000000-60000000")
+                assert "该范围内无变异" in msgs[-1]
+        run(_t())
+
+    def test_chrom_without_variants_warns(self):
+        """不存在的染色体单坐标：提示未找到。"""
+        async def _t():
+            app = VcfBrowser(SAMPLE_VCF)
+            msgs = self._capture_notify(app)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                await self._search(pilot, "chrX:100")
+                assert "未找到" in msgs[-1]
+        run(_t())
+
+    def test_invalid_format_falls_back_to_id_search(self):
+        """格式错误（chr1:abc）回退 ID 搜索 → 未找到匹配。"""
+        async def _t():
+            app = VcfBrowser(SAMPLE_VCF)
+            msgs = self._capture_notify(app)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                await self._search(pilot, "chr1:abc")
+                assert "未找到匹配" in msgs[-1]
+        run(_t())
+
+    def test_coord_jump_shifts_window_on_large_list(self, tmp_path):
+        """大列表（窗口化）坐标跳转：跨窗口平移且详情同步。"""
+        f = tmp_path / "c.vcf"
+        lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"]
+        lines += [f"chr1\t{i}\t.\tA\tG\t50\tPASS\t." for i in range(1, 1001)]
+        f.write_text("\n".join(lines) + "\n")
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                await self._search(pilot, "chr1:800")
+                assert app._abs_index() == 799  # pos=800 是第 800 条
+                assert app._win_start > 0       # 窗口已平移
+                assert "800" in app._detail_text()
+        run(_t())
+
+    def test_scanning_suffix_in_message(self, tmp_path):
+        """扫描中搜索：提示含（当前已索引 N 条）。"""
+        f = tmp_path / "s.vcf"
+        lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO",
+                 "chr1\t100\t.\tA\tG\t50\tPASS\t."]
+        f.write_text("\n".join(lines) + "\n")
+        async def _t():
+            app = VcfBrowser(f)
+            msgs = self._capture_notify(app)
+            app.scanning = True  # 模拟扫描中
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                await self._search(pilot, "chr9:1-2")
+                assert "该范围内无变异" in msgs[-1]
+                assert "当前已索引" in msgs[-1]
+                app.scanning = False
+        run(_t())
+
+
+# ──────────────────────────────────────────────
+# 真实比例滚动条（遗留建议：映射全量 view）
+# ──────────────────────────────────────────────
+class TestAbsoluteScrollbar:
+    def test_visibility_follows_list_size(self, tmp_path):
+        """大列表显示真实比例滚动条，小列表隐藏。"""
+        f = tmp_path / "b.vcf"
+        lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"]
+        lines += [f"chr1\t{i}\t.\tA\tG\t50\tPASS\t." for i in range(1, 1001)]
+        f.write_text("\n".join(lines) + "\n")
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                sb = app.query_one("#abs-scrollbar", AbsoluteScrollbar)
+                assert str(sb.styles.display) == "block"  # 1000 > WINDOW
+                rendered = str(sb.render())
+                assert "█" in rendered and "░" in rendered  # 滑块 + 轨道
+            # 小列表：隐藏
+            app2 = VcfBrowser(SAMPLE_VCF)
+            async with app2.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                sb2 = app2.query_one("#abs-scrollbar", AbsoluteScrollbar)
+                assert str(sb2.styles.display) == "none"  # 18 ≤ WINDOW
+        run(_t())
+
+    def test_jump_to_maps_full_view(self, tmp_path):
+        """点击映射全量 view：底部 → 最后一条，中部 → 中位附近。"""
+        f = tmp_path / "j.vcf"
+        lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"]
+        lines += [f"chr1\t{i * 100}\t.\tA\tG\t50\tPASS\t." for i in range(1, 5001)]
+        f.write_text("\n".join(lines) + "\n")
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                sb = app.query_one("#abs-scrollbar", AbsoluteScrollbar)
+                sb._jump_to(sb.size.height)  # 底部
+                await pilot.pause()
+                assert app._abs_index() == len(app.view) - 1 == 4999
+                sb._jump_to(0)  # 顶部
+                await pilot.pause()
+                assert app._abs_index() == 0
+        run(_t())
+
+    def test_thumb_position_tracks_navigation(self, tmp_path):
+        """导航后滑块位置同步（渲染内容随位置变化）。"""
+        f = tmp_path / "n.vcf"
+        lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"]
+        lines += [f"chr1\t{i}\t.\tA\tG\t50\tPASS\t." for i in range(1, 2001)]
+        f.write_text("\n".join(lines) + "\n")
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                sb = app.query_one("#abs-scrollbar", AbsoluteScrollbar)
+                top_render = str(sb.render())
+                await pilot.press("G")
+                await pilot.pause()
+                sb.refresh()
+                bottom_render = str(sb.render())
+                assert top_render != bottom_render  # 滑块已移动
         run(_t())
 
 

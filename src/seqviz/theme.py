@@ -405,6 +405,11 @@ def build_vcf_browser_css(theme: dict) -> str:
     #variant-list > OptionList > .option-list--option-hover {{
         background: {highlight};
     }}
+    #abs-scrollbar {{
+        width: 1;
+        background: {bg};
+        color: {accent};
+    }}
     #detail {{
         width: 1fr;
         padding: 0 1;

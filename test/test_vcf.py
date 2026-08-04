@@ -15,6 +15,7 @@ from seqviz.vcf import (
     scan_vcf,
     scan_vcf_quick,
     scan_vcf_resume,
+    parse_coord_query,
 )
 
 SAMPLE_VCF = Path(__file__).parent / "sample.vcf"
@@ -159,6 +160,35 @@ class TestScanVcf:
                      "chr1\t2\t.\tC\tT\t.\tPASS\t.\n")
         _, variants, skipped = scan_vcf(f)
         assert len(variants) == 2 and skipped == 1
+
+
+class TestParseCoordQuery:
+    def test_single_coord(self):
+        assert parse_coord_query("chr1:10000") == ("chr1", 10000, None)
+
+    def test_range_dash(self):
+        assert parse_coord_query("chr1:10000-20000") == ("chr1", 10000, 20000)
+
+    def test_range_dotdot(self):
+        assert parse_coord_query("chr1:10000..20000") == ("chr1", 10000, 20000)
+
+    def test_range_reversed_swapped(self):
+        assert parse_coord_query("chr1:20000-10000") == ("chr1", 10000, 20000)
+
+    def test_thousands_separator(self):
+        assert parse_coord_query("chr1:10,000-20,000") == ("chr1", 10000, 20000)
+        assert parse_coord_query("chrX:1,234,567") == ("chrX", 1234567, None)
+
+    def test_whitespace_tolerated(self):
+        assert parse_coord_query(" chr1 : 100 - 200 ") == ("chr1", 100, 200)
+
+    def test_invalid_inputs(self):
+        assert parse_coord_query("rs12345") is None
+        assert parse_coord_query("chr1:abc") is None
+        assert parse_coord_query("chr1:") is None
+        assert parse_coord_query("") is None
+        assert parse_coord_query(None) is None
+        assert parse_coord_query("chr1:100-200-300") is None
 
 
 class TestQuickScanAndResume:

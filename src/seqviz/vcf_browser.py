@@ -13,6 +13,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Footer, Header, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
@@ -23,6 +24,7 @@ from seqviz.vcf import (
     classify_variant,
     compute_stats,
     load_variant_detail,
+    parse_coord_query,
     parse_genotype,
     scan_vcf,
     scan_vcf_resume,
@@ -75,6 +77,62 @@ class VariantList(OptionList):
             super().scroll_up(animate)
 
 
+class AbsoluteScrollbar(Widget):
+    """真实比例滚动条：映射全量 view 的绝对位置（窗口化大列表专用）。
+
+    OptionList 原生滚动条只代表物化的 WINDOW 条缓冲（虚假的“拖到底=全部末尾”）；
+    本控件滑块位置/长度按 当前位置/窗口占比 映射全量 view，点击/拖拽直达。
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._dragging = False
+
+    def render(self):
+        app = self.app
+        h = self.size.height
+        txt = Text()
+        if not isinstance(app, VcfBrowser) or h <= 0 or len(app.view) <= app.WINDOW:
+            return txt
+        n = len(app.view)
+        thumb_h = max(1, round(h * min(app.WINDOW, n) / n))
+        track = h - thumb_h
+        frac = app._abs_index() / max(n - 1, 1)
+        thumb_start = round(frac * track)
+        for row in range(h):
+            if thumb_start <= row < thumb_start + thumb_h:
+                txt.append("█")
+            else:
+                txt.append("░", style="dim")
+            if row < h - 1:
+                txt.append("\n")
+        return txt
+
+    def _jump_to(self, y: int):
+        app = self.app
+        if not isinstance(app, VcfBrowser) or not app.view:
+            return
+        h = max(self.size.height, 1)
+        frac = min(max(y / h, 0.0), 1.0)
+        app._goto_abs(int(frac * (len(app.view) - 1)))
+
+    def on_mouse_down(self, event) -> None:
+        self._dragging = True
+        self.capture_mouse()
+        self._jump_to(event.y)
+        event.stop()
+
+    def on_mouse_move(self, event) -> None:
+        if self._dragging:
+            self._jump_to(event.y)
+            event.stop()
+
+    def on_mouse_up(self, event) -> None:
+        if self._dragging:
+            self._dragging = False
+            event.stop()
+
+
 class HelpScreen(ModalScreen):
     """帮助面板：显示所有快捷键。"""
 
@@ -106,7 +164,7 @@ class HelpScreen(ModalScreen):
         rows = [
             ("j / k", "上下移动"), ("n / p", "下/上一条变异"),
             ("Space / b", "翻页"), ("g / G", "顶部 / 底部"),
-            ("/", "搜索 ID 或坐标"), ("f", "过滤循环 (全部/PASS/SNP/InDel)"),
+            ("/", "搜索: ID / chr:pos / chr:a-b"), ("f", "过滤循环 (全部/PASS/SNP/InDel)"),
             ("s", "排序切换 (位置/QUAL)"), ("t", "详情 ↔ 基因型矩阵"),
             ("i", "文件信息"), ("y", "复制当前 VCF 行"),
             ("?", "帮助"), ("q", "退出"),
@@ -189,6 +247,7 @@ class VcfBrowser(App):
         yield Header()
         with Horizontal():
             yield VariantList(id="variant-list")
+            yield AbsoluteScrollbar(id="abs-scrollbar")
             yield Static("", id="detail")
         yield Static("", id="status-bar")
         yield Footer()
@@ -237,8 +296,75 @@ class VcfBrowser(App):
             self._chrom_keys = {}
         k = self._chrom_keys.get(chrom)
         if k is None:
-            k = self._chrom_keys[chrom] = _chrom_sort_key(chrom)
+            k = self._chrom_keys[chrom] = _chrom_sort_key(chrom.lower())  # 大小写不敏感
         return k
+
+    # ── 坐标/范围查找（遗留建议：二分直达坐标） ──
+    def _bisect_view(self, target_key: tuple, pos: int) -> int:
+        """在位置有序的 view 上二分：返回第一个 (染色体键, 坐标) >= (target_key, pos) 的下标。
+
+        仅当 sort_mode == “位置”时 view 保证有序（过滤为保序筛选）。
+        """
+        lo, hi = 0, len(self.view)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            v = self.variants[self.view[mid]]
+            if (self._chrom_key_of(v.chrom), v.pos) < (target_key, pos):
+                lo = mid + 1
+            else:
+                hi = mid
+        return lo
+
+    def _find_coord_in_view(self, chrom: str, start: int, end: int | None) -> int | None:
+        """在 view 中找第一个 chrom 匹配且 pos ∈ [start, end] 的绝对下标。
+
+        位置排序模式二分 O(log n)；其他排序模式（如 QUAL）线性扫描。
+        """
+        target_key = self._chrom_key_of(chrom)
+        if self.sort_mode == "位置":
+            lo = self._bisect_view(target_key, start)
+            if lo < len(self.view):
+                v = self.variants[self.view[lo]]
+                if (self._chrom_key_of(v.chrom) == target_key and v.pos >= start
+                        and (end is None or v.pos <= end)):
+                    return lo
+            return None
+        for li, vi in enumerate(self.view):
+            v = self.variants[vi]
+            if (self._chrom_key_of(v.chrom) == target_key and v.pos >= start
+                    and (end is None or v.pos <= end)):
+                return li
+        return None
+
+    def _find_coord_nearest(self, chrom: str, pos: int) -> int | None:
+        """单坐标最近邻：精确命中优先，否则取前后候选中距离更近者。
+
+        位置排序模式二分定位 + 邻位比较；其他模式线性扫描取最小距离。
+        """
+        target_key = self._chrom_key_of(chrom)
+        if self.sort_mode != "位置":
+            best, best_d = None, None
+            for li, vi in enumerate(self.view):
+                v = self.variants[vi]
+                if self._chrom_key_of(v.chrom) != target_key:
+                    continue
+                d = abs(v.pos - pos)
+                if best_d is None or d < best_d:
+                    best, best_d = li, d
+            return best
+        n = len(self.view)
+        lo = self._bisect_view(target_key, pos)
+        best, best_d = None, None
+        for li in (lo, lo - 1):
+            if not (0 <= li < n):
+                continue
+            v = self.variants[self.view[li]]
+            if self._chrom_key_of(v.chrom) != target_key:
+                continue
+            d = abs(v.pos - pos)
+            if best_d is None or d < best_d:
+                best, best_d = li, d
+        return best
 
     def _extend_index(self, batch: list[Variant]):
         """纯数据层：追加索引并维护位置序/pos_order/view（不碰 UI 控件）。"""
@@ -306,13 +432,15 @@ class VcfBrowser(App):
         self.notify(f"扫描完成，共 {len(self.variants):,} 条变异", title="VCF")
 
     def _sync_scrollbar(self):
-        """滚动条仅在列表全量物化（≤WINDOW 条）时显示。
-
-        大列表只物化窗口，滚动条会虚假地暗示“拖到底 = 全部数据末尾”
-        （实际只能到 400 条缓冲底部），因此隐藏；改用位置指示器 + G/g 跳转。
+        """滚动策略：小列表用 OptionList 原生滚动条；
+        大列表（>WINDOW）隐藏原生滚动条（它只代表 400 条缓冲，是虚假表示），
+        改用 AbsoluteScrollbar 真实比例映射全量 view。
         """
         ol = self.query_one("#variant-list", OptionList)
         ol.show_scrollbar = len(self.view) <= self.WINDOW
+        sb = self.query_one("#abs-scrollbar", AbsoluteScrollbar)
+        sb.styles.display = "block" if len(self.view) > self.WINDOW else "none"
+        sb.refresh()
 
     def _sync_position_indicator(self):
         """副标题位置指示器：当前行 / 总行数（含扫描中增长的总量）。"""
@@ -320,6 +448,8 @@ class VcfBrowser(App):
             self.sub_title = f"{self._abs_index() + 1:,} / {len(self.view):,}"
         else:
             self.sub_title = "0 / 0"
+        # 位置变化 → 同步真实比例滚动条滑块
+        self.query_one("#abs-scrollbar", AbsoluteScrollbar).refresh()
 
     def _detail_fh(self):
         """详情回读复用句柄（避免每次导航 open/close）。"""
@@ -638,8 +768,9 @@ class VcfBrowser(App):
     # ── 搜索命令栏 ──
     async def _show_search_bar(self) -> None:
         self._remove_search_bar()
-        bar = Input(placeholder="搜索 ID 或坐标 (如 rs12345 / chr1:10234)... (Enter 确认, Esc 取消)",
-                    id="search-input")
+        bar = Input(
+            placeholder="搜索 ID / 坐标 / 范围（如 rs12345、chr1:10234、chr1:10000-20000 或 chr1:10000..20000）… (Enter 确认, Esc 取消)",
+            id="search-input")
         await self.mount(bar)
         bar.focus()
 
@@ -661,6 +792,28 @@ class VcfBrowser(App):
         value = event.value.strip()
         if not value:
             return
+        # 1) 坐标/范围查询：chr1:10000 / chr1:10000-20000 / chr1:10000..20000
+        coord_q = parse_coord_query(value)
+        if coord_q is not None:
+            chrom, start, end = coord_q
+            if not self.view:
+                self.notify("当前没有可搜索的变异", title="搜索", severity="warning")
+                return
+            if end is not None:
+                li = self._find_coord_in_view(chrom, start, end)
+            else:
+                li = self._find_coord_nearest(chrom, start)
+            suffix = f"（当前已索引 {len(self.variants):,} 条）" if self.scanning else ""
+            if li is None:
+                rng = f"{chrom}:{start:,}-{end:,}" if end is not None else f"{chrom}:{start:,}"
+                msg = f"{rng} 该范围内无变异" if end is not None else f"{chrom} 上未找到 {start:,} 附近的变异"
+                self.notify(msg + suffix, title="搜索", severity="warning")
+                return
+            self._goto_abs(li)
+            v = self.variants[self.view[li]]
+            self.notify(f"跳转到 {v.chrom}:{v.pos:,} {v.id or ''}".strip() + suffix, title="搜索")
+            return
+        # 2) 回退：ID / 精确坐标字符串匹配
         q = value.lower()
         for li, vi in enumerate(self.view):
             v = self.variants[vi]
