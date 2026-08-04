@@ -4,6 +4,7 @@ from pathlib import Path
 
 from textual.widgets import OptionList
 
+from seqviz.vcf import scan_vcf_quick
 from seqviz.vcf_browser import VcfBrowser
 
 TEST_DIR = Path(__file__).parent
@@ -234,6 +235,48 @@ class TestMatrixInfoCopy:
                 await pilot.press("q")
                 await pilot.pause()
                 assert len(app.screen_stack) == 1  # q 只关闭帮助屏，不退出
+        run(_t())
+
+
+# ──────────────────────────────────────────────
+# 后台续扫（启动即显）
+# ──────────────────────────────────────────────
+class TestBackgroundScan:
+    def test_immediate_display_then_background_completion(self):
+        """快扫 2 条立即启动，后台续扫完成后总量补齐、无丢失。"""
+        meta, head, skipped, cont = scan_vcf_quick(SAMPLE_VCF, limit=2)
+        assert cont >= 0
+        async def _t():
+            app = VcfBrowser(SAMPLE_VCF, initial=(meta, head, skipped, cont))
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                assert len(app.variants) >= 2  # 首屏至少有快扫的 2 条
+                # 等待后台扫描完成（对账补齐；小文件可能瞬间完成）
+                for _ in range(100):
+                    if not app.scanning:
+                        break
+                    await pilot.pause()
+                assert app.scanning is False
+                assert len(app.variants) == 18  # sample.vcf 全量，不丢不重
+                assert len(app.view) == 18
+                ol = app.query_one("#variant-list", OptionList)
+                assert ol.option_count == 18
+        run(_t())
+
+    def test_scan_aborts_on_exit(self, tmp_path):
+        """退出应用后扫描线程停止（不挂起）。"""
+        # 生成 2 万条使续扫需要一定时间
+        f = tmp_path / "m.vcf"
+        lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"]
+        lines += [f"chr1\t{i}\t.\tA\tG\t50\tPASS\t." for i in range(1, 20_001)]
+        f.write_text("\n".join(lines) + "\n")
+        meta, head, skipped, cont = scan_vcf_quick(f, limit=10)
+        async def _t():
+            app = VcfBrowser(f, initial=(meta, head, skipped, cont))
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+            # 退出后 scanning 标志应被置 False（on_unmount）
+            assert app.scanning is False
         run(_t())
 
 

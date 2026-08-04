@@ -13,6 +13,8 @@ from seqviz.vcf import (
     parse_meta,
     parse_variant_line,
     scan_vcf,
+    scan_vcf_quick,
+    scan_vcf_resume,
 )
 
 SAMPLE_VCF = Path(__file__).parent / "sample.vcf"
@@ -159,6 +161,55 @@ class TestScanVcf:
         assert len(variants) == 2 and skipped == 1
 
 
+class TestQuickScanAndResume:
+    def test_quick_scan_limit_and_continuation(self):
+        """快扫 + 续扫拼接结果 == 全量扫描（断点不丢不重）。"""
+        _, full, _ = scan_vcf(SAMPLE_VCF)
+        meta, head, skipped1, cont = scan_vcf_quick(SAMPLE_VCF, limit=5)
+        assert len(head) == 5
+        assert cont > 0
+        assert meta.samples == ["sample1", "sample2", "sample3"]
+        tail, skipped2 = scan_vcf_resume(SAMPLE_VCF, cont)
+        merged = head + tail
+        assert len(merged) == len(full)
+        assert [(v.chrom, v.pos, v.ref, v.alt) for v in merged] == \
+               [(v.chrom, v.pos, v.ref, v.alt) for v in full]
+        assert skipped1 + skipped2 == 0
+
+    def test_quick_scan_small_file_no_continuation(self):
+        """文件小于 limit：一次扫完，cont_offset=-1。"""
+        meta, variants, skipped, cont = scan_vcf_quick(SAMPLE_VCF, limit=5000)
+        assert len(variants) == 18
+        assert cont == -1
+
+    def test_quick_scan_full_equivalent(self):
+        """limit<=0 等同全量扫描。"""
+        meta, variants, skipped, cont = scan_vcf_quick(SAMPLE_VCF, limit=0)
+        assert len(variants) == 18 and cont == -1
+
+    def test_resume_batch_callback(self):
+        """on_batch 回调末尾必触发，累计覆盖全部数据。"""
+        _, full, _ = scan_vcf(SAMPLE_VCF)
+        _, _, _, cont = scan_vcf_quick(SAMPLE_VCF, limit=3)
+        batches = []
+        tail, _ = scan_vcf_resume(SAMPLE_VCF, cont, on_batch=batches.append,
+                                  callback_interval=0.0)
+        assert sum(len(b) for b in batches) == len(tail) == len(full) - 3
+
+    def test_resume_stop_iteration_aborts(self, tmp_path):
+        """on_batch 抛 StopIteration 提前中断扫描。"""
+        f = tmp_path / "many.vcf"
+        lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"]
+        lines += [f"chr1\t{i}\t.\tA\tG\t50\tPASS\t." for i in range(1, 10001)]
+        f.write_text("\n".join(lines) + "\n")
+
+        def _stop(batch):
+            raise StopIteration
+        _, _, _, cont = scan_vcf_quick(f, limit=10)
+        tail, _ = scan_vcf_resume(f, cont, on_batch=_stop)
+        assert len(tail) < 10000  # 提前中断
+
+
 class TestLoadVariantDetail:
     def test_roundtrip(self):
         _, variants, _ = scan_vcf(SAMPLE_VCF)
@@ -168,6 +219,16 @@ class TestLoadVariantDetail:
         assert first.samples["sample1"] == "0/1:15:99:10,5"
         assert first.format_fields == ["GT", "DP", "GQ", "AD"]
         assert first.raw.startswith("chr1\t10234")
+
+    def test_roundtrip_with_reused_handle(self):
+        """句柄复用路径（fh 参数）结果与默认路径一致。"""
+        _, variants, _ = scan_vcf(SAMPLE_VCF)
+        samples = ["sample1", "sample2", "sample3"]
+        with open(SAMPLE_VCF, "rb") as fh:
+            for v in variants[:3]:
+                load_variant_detail(SAMPLE_VCF, v, samples, fh=fh)
+        assert variants[0].samples["sample1"] == "0/1:15:99:10,5"
+        assert variants[2].raw.startswith("chr1\t15892")
 
     def test_idempotent(self):
         _, variants, _ = scan_vcf(SAMPLE_VCF)

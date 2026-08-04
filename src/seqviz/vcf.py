@@ -1,7 +1,8 @@
 """VCF (Variant Call Format) 解析层 — 纯解析，无 UI 依赖。
 
 支持未压缩纯文本 VCF v4.x。采用懒扫描策略：
-scan_vcf 只解析前 8 列（含 INFO），样本基因型按需 seek 回读。
+扫描只解析前 8 列（含 INFO），样本基因型按需 seek 回读。
+全链路二进制模式：扫描避免解码样本列（提速 ~3x），offset 为字节偏移。
 """
 
 import re
@@ -131,6 +132,35 @@ def _parse_info(info_str: str) -> dict:
     return info
 
 
+def _index_line(line: bytes, offset: int) -> Variant | None:
+    """从二进制行构建索引记录（只前 8 列，只解码索引所需部分，快路径）。"""
+    if len(line) < 2 or line[:1] == b"#":
+        return None
+    parts = line.rstrip(b"\r\n").split(b"\t", 8)  # 只切前 8 列，避免样本列开销
+    if len(parts) < 8:
+        return None
+    try:
+        pos = int(parts[1])
+    except ValueError:
+        return None
+    qual = None
+    if parts[5] != b".":
+        try:
+            qual = float(parts[5])
+        except ValueError:
+            pass
+    vid = parts[2].decode("utf-8", "replace")
+    return Variant(
+        chrom=parts[0].decode("utf-8", "replace"), pos=pos,
+        id="" if vid == "." else vid,
+        ref=parts[3].decode("utf-8", "replace"),
+        alt=parts[4].decode("utf-8", "replace"),
+        qual=qual, filter=parts[6].decode("utf-8", "replace"),
+        info=_parse_info(parts[7].decode("utf-8", "replace")),
+        offset=offset,
+    )
+
+
 def parse_variant_line(line: str, offset: int = 0,
                        sample_names: list[str] | None = None) -> Variant | None:
     """完整解析单条数据行；畸形行（<8 列或 POS 非整数）返回 None。"""
@@ -166,66 +196,121 @@ def parse_variant_line(line: str, offset: int = 0,
 
 
 def scan_vcf(path) -> tuple[VcfMeta, list[Variant], int]:
-    """懒扫描：解析 meta + 每行前 8 列 + 字节 offset。
+    """全量懒扫描（二进制快路径）。返回 (meta, variants, skipped)。"""
+    meta, variants, skipped, _ = scan_vcf_quick(path, limit=0)
+    return meta, variants, skipped
 
-    样本列不解析（按需 load_variant_detail）。返回 (meta, variants, skipped)。
+
+def scan_vcf_quick(path, limit: int = 5000) -> tuple[VcfMeta, list[Variant], int, int]:
+    """快速扫描：读取 meta + 前 limit 条索引，返回 (meta, variants, skipped, cont_offset)。
+
+    limit<=0 表示扫完全文（cont_offset=-1）。cont_offset>=0 为续扫起点字节偏移，
+    供 scan_vcf_resume 后台继续。用于“启动即显 + 后台续扫”。
     """
     header_lines: list[str] = []
     variants: list[Variant] = []
     sample_names: list[str] = []
     has_header = False
     skipped = 0
-    with open(path, encoding="utf-8", errors="replace") as f:
+    cont_offset = -1
+    with open(path, "rb", buffering=8 * 1024 * 1024) as f:
         while True:
             offset = f.tell()
             line = f.readline()
             if not line:
                 break
-            if line.startswith("##"):
-                header_lines.append(line)
+            if line[:2] == b"##":
+                header_lines.append(line.decode("utf-8", "replace"))
                 continue
-            if line.startswith("#CHROM"):
+            if line[:6] == b"#CHROM":
                 has_header = True
-                cols = line.rstrip("\n").split("\t")
+                cols = line.decode("utf-8", "replace").rstrip("\r\n").split("\t")
                 sample_names = cols[9:] if len(cols) > 9 else []
                 continue
-            parts = line.rstrip("\n").split("\t", 8)  # 只切前 8 列，避免样本列开销
-            if len(parts) < 8 or parts[0].startswith("#"):
+            v = _index_line(line, offset)
+            if v is None:
                 skipped += 1
                 continue
-            try:
-                pos = int(parts[1])
-            except ValueError:
-                skipped += 1
-                continue
-            qual = None
-            if parts[5] != ".":
-                try:
-                    qual = float(parts[5])
-                except ValueError:
-                    pass
-            variants.append(Variant(
-                chrom=parts[0], pos=pos,
-                id="" if parts[2] == "." else parts[2],
-                ref=parts[3], alt=parts[4],
-                qual=qual, filter=parts[6],
-                info=_parse_info(parts[7]),
-                offset=offset,
-            ))
+            variants.append(v)
+            if limit and len(variants) >= limit:
+                cont_offset = f.tell()
+                break
     meta = parse_meta(header_lines)
     meta.samples = sample_names
     meta.has_header = has_header
-    return meta, variants, skipped
+    return meta, variants, skipped, cont_offset
 
 
-def load_variant_detail(path, variant: Variant, sample_names: list[str]) -> Variant:
-    """seek(offset) 回读完整行，填充 format_fields/samples/raw（原地修改并返回）。"""
+def scan_vcf_resume(path, cont_offset: int, on_batch=None,
+                    callback_interval: float = 0.5) -> tuple[list[Variant], int]:
+    """从 cont_offset 续扫到文件末尾（供后台线程调用）。
+
+    on_batch(new_variants) 按时间节流回调（距上次 >= callback_interval 秒，
+    末尾必回调一次），避免频繁回调压垮 UI 线程。返回 (全部新变异, skipped)。
+    中断：on_batch 抛 StopIteration 时提前结束。
+    """
+    import time as _time
+    variants: list[Variant] = []
+    skipped = 0
+    last_cb_len = 0
+    last_cb_time = 0.0
+    since_yield = 0
+    with open(path, "rb", buffering=8 * 1024 * 1024) as f:
+        f.seek(cont_offset)
+        while True:
+            offset = f.tell()
+            line = f.readline()
+            if not line:
+                break
+            if line[:1] == b"#":
+                continue
+            v = _index_line(line, offset)
+            if v is None:
+                skipped += 1
+                continue
+            variants.append(v)
+            # 固定低占空比让出 GIL：实测扫描循环的 C 函数段长时间独占 GIL，
+            # 短 sleep（≤20ms）无法为 UI 线程赢得时间片（按键延迟 2s）；
+            # 25ms/1000 行实测 UI 恢复 106-256ms/键，扫描总耗时后台可接受
+            since_yield += 1
+            if since_yield >= 1000:
+                since_yield = 0
+                _time.sleep(0.025)
+            if on_batch is not None and len(variants) - last_cb_len >= 50_000:
+                now = _time.monotonic()
+                if now - last_cb_time >= callback_interval:
+                    try:
+                        on_batch(variants[last_cb_len:])
+                    except StopIteration:
+                        break
+                    last_cb_len = len(variants)
+                    last_cb_time = now
+    if on_batch is not None and len(variants) > last_cb_len:
+        try:
+            on_batch(variants[last_cb_len:])
+        except StopIteration:
+            pass
+    return variants, skipped
+
+
+def load_variant_detail(path, variant: Variant, sample_names: list[str], fh=None) -> Variant:
+    """seek(offset) 回读完整行，填充 format_fields/samples/raw（原地修改并返回）。
+
+    二进制读取 + 单行解码；传入 fh（已打开二进制句柄）可复用避免重复 open。
+    """
     if variant.raw:
         return variant  # 已加载
-    with open(path, encoding="utf-8", errors="replace") as f:
-        f.seek(variant.offset)
-        line = f.readline()
-    full = parse_variant_line(line, variant.offset, sample_names)
+
+    def _read(handle):
+        handle.seek(variant.offset)
+        return handle.readline()
+
+    if fh is not None:
+        line = _read(fh)
+    else:
+        with open(path, "rb") as f:
+            line = _read(f)
+    full = parse_variant_line(line.decode("utf-8", "replace"), variant.offset, sample_names)
     if full is not None:
         variant.format_fields = full.format_fields
         variant.samples = full.samples

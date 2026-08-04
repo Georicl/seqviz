@@ -25,6 +25,7 @@ from seqviz.vcf import (
     load_variant_detail,
     parse_genotype,
     scan_vcf,
+    scan_vcf_resume,
 )
 
 _TYPE_SYMBOL = {
@@ -120,16 +121,27 @@ class VcfBrowser(App):
     ]
 
     # 列表窗口化虚拟化：OptionList 只物化当前窗口，避免大文件全量重建冻结 UI
-    WINDOW = 2000
+    WINDOW = 400
     PAGE = 20
 
-    def __init__(self, filepath: Path, scanned=None):
+    def __init__(self, filepath: Path, scanned=None, initial=None):
+        """scanned=(meta, variants, skipped) 全量结果；
+        initial=(meta, variants, skipped, cont_offset) 快扫部分结果，cont_offset>=0 时后台续扫。"""
         super().__init__()
         self.filepath = filepath
-        if scanned is not None:
+        self._cont_offset = -1
+        self.scanning = False
+        if initial is not None:
+            self.meta, self.variants, self.skipped, self._cont_offset = initial
+            self.scanning = self._cont_offset >= 0
+        elif scanned is not None:
             self.meta, self.variants, self.skipped = scanned
         else:
             self.meta, self.variants, self.skipped = scan_vcf(filepath)
+        self._fh = None             # 详情回读复用句柄（二进制）
+        self._order_dirty = False   # 后台扫描破坏坐标序时置位，下次过滤/排序前重建
+        self._view_dirty = False    # 扫描中用户改过过滤/排序，完成后重建 view
+        self._initial_count = 0     # 快扫初始条数（续扫对账基准）
         self.view: list[int] = list(range(len(self.variants)))  # 过滤/排序后的下标映射
         self._chrom_keys: dict[str, tuple] | None = None  # 数字感知染色体键缓存
         self._qual_order: list[int] | None = None         # 全局 QUAL 降序（首次 s 键懒计算）
@@ -137,11 +149,13 @@ class VcfBrowser(App):
         self._stats_token = 0                             # 异步统计的版本号（防竞态）
         # 默认按位置排序：VCF 通常已按坐标排序（O(n) 校验快路径），否则全量排序一次并缓存。
         # 后续过滤在有序列表上做保序筛选，不再重复排序（5M 级免冻结的关键）。
-        if self._check_scan_sorted():
+        self._scan_sorted = self._check_scan_sorted()
+        if self._scan_sorted:
             self._pos_order = list(self.view)
         else:
             self.view.sort(key=self._pos_key)
             self._pos_order = list(self.view)
+        self._initial_count = len(self.variants)
         self._win_start = 0  # 当前窗口在 view 中的起始下标
         self.filter_mode = "全部"
         self.sort_mode = "位置"
@@ -157,8 +171,114 @@ class VcfBrowser(App):
         yield Footer()
 
     def on_mount(self):
+        if self.scanning:
+            # 扫描中总量未定，滚动条无意义且每次追加触发全量重算（卡顿主因）
+            self.query_one("#variant-list", OptionList).show_scrollbar = False
         self._refresh_list()
         self.query_one("#variant-list", OptionList).focus()
+        if self.scanning:
+            self.run_worker(self._background_scan_worker, thread=True, exclusive=False)
+
+    def on_unmount(self):
+        if self._fh is not None and not self._fh.closed:
+            self._fh.close()
+        self.scanning = False  # 通知后台扫描线程尽早退出
+
+    # ── 后台续扫（启动即显） ──
+    def _background_scan_worker(self):
+        """后台线程：从快扫断点继续索引，按时间节流回 UI 线程增量追加。"""
+        import time as _time
+
+        def _dispatch(batch):
+            if not self.scanning:
+                raise StopIteration  # 应用已关闭，中断扫描
+            try:
+                self.call_from_thread(self._append_batch, batch)
+            except RuntimeError:
+                raise StopIteration
+            _time.sleep(0.02)  # 让出 GIL，保证 UI 线程滚动流畅
+        try:
+            new_all, skipped_add = scan_vcf_resume(
+                self.filepath, self._cont_offset, on_batch=_dispatch)
+        except Exception:  # noqa: BLE001
+            return
+        try:
+            self.call_from_thread(self._finish_scan, new_all, skipped_add)
+        except RuntimeError:
+            pass  # 应用已退出
+
+    def _pos_ge(self, a: Variant, b: Variant) -> bool:
+        """a 是否位于 b 同位或之后（坐标序判定）。"""
+        ka, kb = self._chrom_key_of(a.chrom), self._chrom_key_of(b.chrom)
+        return ka > kb or (ka == kb and a.pos >= b.pos)
+
+    def _chrom_key_of(self, chrom: str):
+        if self._chrom_keys is None:
+            self._chrom_keys = {}
+        k = self._chrom_keys.get(chrom)
+        if k is None:
+            k = self._chrom_keys[chrom] = _chrom_sort_key(chrom)
+        return k
+
+    def _extend_index(self, batch: list[Variant]):
+        """纯数据层：追加索引并维护位置序/pos_order/view（不碰 UI 控件）。"""
+        ok = self._scan_sorted and not self._order_dirty
+        if ok and self.variants and not self._pos_ge(batch[0], self.variants[-1]):
+            ok = False
+        if ok:
+            for x, y in zip(batch, batch[1:]):
+                if not self._pos_ge(y, x):
+                    ok = False
+                    break
+        start = len(self.variants)
+        self.variants.extend(batch)
+        new_idxs = list(range(start, len(self.variants)))
+        if ok:
+            self._pos_order.extend(new_idxs)
+        else:
+            self._order_dirty = True
+        default_view = (self.filter_mode == "全部" and self.sort_mode == "位置" and not self._order_dirty)
+        if default_view:
+            self.view.extend(new_idxs)
+        else:
+            self._view_dirty = True
+        return default_view
+
+    def _append_batch(self, batch: list[Variant]):
+        """UI 线程：追加一批索引，默认视图下同步延展列表窗口。"""
+        if not self.scanning:
+            return
+        default_view = self._extend_index(batch)
+        if default_view:
+            # 仅重建当前窗口（WINDOW 条，毫秒级），不打断浏览
+            self._rebuild_window(self._win_start, self._abs_index())
+        self._update_status_bar()
+
+    def _finish_scan(self, new_all: list[Variant], skipped_add: int):
+        """扫描完成：用全量结果对账补齐（节流回调可能漏尾），刷新视图。"""
+        self.scanning = False
+        self.skipped += skipped_add
+        appended = len(self.variants) - self._initial_count
+        if appended < len(new_all):
+            default_view = self._extend_index(new_all[appended:])
+            if default_view:
+                self._rebuild_window(self._win_start, self._abs_index())
+        if self._view_dirty or self._order_dirty:
+            self._apply_filter_sort()
+        else:
+            self._update_status_bar()
+        # 滚动条恢复延迟到空闲时（5.7M 项虚拟高度一次性重算会冻 UI 3s）
+        self.set_timer(1.5, self._restore_scrollbar)
+        self.notify(f"扫描完成，共 {len(self.variants):,} 条变异", title="VCF")
+
+    def _restore_scrollbar(self):
+        self.query_one("#variant-list", OptionList).show_scrollbar = True
+
+    def _detail_fh(self):
+        """详情回读复用句柄（避免每次导航 open/close）。"""
+        if self._fh is None or self._fh.closed:
+            self._fh = open(self.filepath, "rb")
+        return self._fh
 
     # ── 排序/过滤基础设施 ──
     def _check_scan_sorted(self) -> bool:
@@ -197,6 +317,13 @@ class VcfBrowser(App):
 
     def _apply_filter_sort(self):
         """过滤/排序：在缓存的全局有序列表上做保序筛选，不重复全量排序。"""
+        if self._order_dirty:
+            # 后台扫描破坏了坐标序：一次性重建全局位置序（显式操作时才付出该成本）
+            order = list(range(len(self.variants)))
+            order.sort(key=self._pos_key)
+            self._pos_order = order
+            self._qual_order = None
+            self._order_dirty = False
         if self.sort_mode == "QUAL":
             if self._qual_order is None:
                 # 首次全局 QUAL 降序（缺失排最后），后续过滤直接复用
@@ -341,7 +468,7 @@ class VcfBrowser(App):
             return
         idx = self.view[list_index]
         v = self.variants[idx]
-        load_variant_detail(self.filepath, v, self.meta.samples)
+        load_variant_detail(self.filepath, v, self.meta.samples, fh=self._detail_fh())
         self.query_one("#detail", Static).update(self._build_detail(v))
 
     def _detail_text(self) -> str:
@@ -349,7 +476,7 @@ class VcfBrowser(App):
         if not self.view:
             return ""
         v = self.variants[self.view[self._abs_index()]]
-        load_variant_detail(self.filepath, v, self.meta.samples)
+        load_variant_detail(self.filepath, v, self.meta.samples, fh=self._detail_fh())
         return str(self._build_detail(v))
 
     # ── 基因型矩阵 ──
@@ -365,7 +492,7 @@ class VcfBrowser(App):
         end = min(start + 21, len(self.view))
         for li in range(start, end):
             v = self.variants[self.view[li]]
-            load_variant_detail(self.filepath, v, self.meta.samples)
+            load_variant_detail(self.filepath, v, self.meta.samples, fh=self._detail_fh())
             is_cur = li == current_list_index
             txt.append("▶ " if is_cur else "  ", style="bold green" if is_cur else "")
             txt.append(f"{v.chrom}:{v.pos:<12}", style="bold" if is_cur else "")
@@ -385,7 +512,16 @@ class VcfBrowser(App):
 
     # ── 状态栏（异步统计，避免大文件过滤切换时冻结 UI） ──
     def _update_status_bar(self):
-        """立即刷新计数/过滤/排序；重型统计后台计算后回填。"""
+        """立即刷新计数/过滤/排序；重型统计后台计算后回填。扫描中只显示进度。"""
+        if self.scanning:
+            parts = (
+                f" {len(self.view):,} 变异（扫描中… 已索引 {len(self.variants):,}） │ "
+                f"[过滤:{self.filter_mode}] [排序:{self.sort_mode}]"
+            )
+            if self.skipped:
+                parts += f" │ 跳过 {self.skipped} 行畸形数据"
+            self.query_one("#status-bar", Static).update(Text(parts))
+            return
         parts = (
             f" {len(self.view):,} 变异 │ [过滤:{self.filter_mode}] [排序:{self.sort_mode}] │ 统计中…"
         )
@@ -402,11 +538,13 @@ class VcfBrowser(App):
         s = compute_stats([self.variants[i] for i in snapshot])
         if token == self._stats_token:
             try:
-                self.call_from_thread(self._apply_stats_bar, s)
+                self.call_from_thread(self._apply_stats_bar, s, token)
             except RuntimeError:
                 pass  # 应用已退出
 
-    def _apply_stats_bar(self, s: dict):
+    def _apply_stats_bar(self, s: dict, token: int):
+        if not self.is_running or token != self._stats_token:
+            return  # 应用退出中或已有更新的统计请求，丢弃过时结果
         parts = (
             f" {s['total']:,} 变异 │ SNP {s['snp']:,} · InDel {s['indel']:,} │ "
             f"Ts/Tv {s['ts_tv']:.2f} │ PASS {s['pass_count']:,} │ "
@@ -575,7 +713,7 @@ class VcfBrowser(App):
             self.notify("没有可复制的变异", severity="warning")
             return
         v = self.variants[self.view[self._abs_index()]]
-        load_variant_detail(self.filepath, v, self.meta.samples)
+        load_variant_detail(self.filepath, v, self.meta.samples, fh=self._detail_fh())
         ok = self._copy_to_clipboard(v.raw)
         self._last_copied = v.raw
         if ok:

@@ -38,20 +38,21 @@ def _is_vcf(path: Path) -> bool:
 
 
 def _run_vcf_browser(path: Path):
-    """扫描并启动 VCF 浏览器；空文件/无 #CHROM 表头时友好报错非零退出。
+    """快扫前 5000 条做校验后立即启动 TUI，剩余索引由浏览器后台续扫（启动即显）。
 
-    扫描结果直接传给 VcfBrowser，避免重复扫描大文件。
+    空文件/无 #CHROM 表头时友好报错非零退出。
     """
-    from seqviz.vcf import scan_vcf
+    from seqviz.vcf import scan_vcf_quick
     from seqviz.vcf_browser import VcfBrowser
-    meta, variants, skipped = scan_vcf(path)
+    QUICK_LIMIT = 5000
+    meta, variants, skipped, cont = scan_vcf_quick(path, limit=QUICK_LIMIT)
     if not meta.has_header:
         console.print(f"[red]错误: 不是有效的 VCF 文件（缺少 #CHROM 表头）: {path}[/red]")
         raise typer.Exit(code=1)
     if not variants:
         console.print(f"[red]错误: VCF 文件中没有变异记录: {path}[/red]")
         raise typer.Exit(code=1)
-    VcfBrowser(path, scanned=(meta, variants, skipped)).run()
+    VcfBrowser(path, initial=(meta, variants, skipped, cont)).run()
 
 
 def _launch_browser(paths: list[Path]):
