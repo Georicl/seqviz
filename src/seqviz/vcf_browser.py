@@ -52,6 +52,29 @@ def _chrom_sort_key(chrom: str):
     return tuple(int(p) if p.isdigit() else p for p in re.split(r"(\d+)", chrom))
 
 
+class VariantList(OptionList):
+    """大列表窗口化下的滚轮语义修正。
+
+    默认滚轮只在物化的 WINDOW 条缓冲内滚动视口（不移动选中项），
+    与“选中项 = 浏览位置”的模型矛盾；改为滚轮直接移动位置，窗口随之平移。
+    小列表（全量物化，有滚动条）保持原生滚动行为。
+    """
+
+    def scroll_down(self, animate: bool = True) -> None:
+        app = self.app
+        if isinstance(app, VcfBrowser) and len(app.view) > app.WINDOW:
+            app._goto_abs(app._abs_index() + 3)
+        else:
+            super().scroll_down(animate)
+
+    def scroll_up(self, animate: bool = True) -> None:
+        app = self.app
+        if isinstance(app, VcfBrowser) and len(app.view) > app.WINDOW:
+            app._goto_abs(app._abs_index() - 3)
+        else:
+            super().scroll_up(animate)
+
+
 class HelpScreen(ModalScreen):
     """帮助面板：显示所有快捷键。"""
 
@@ -165,15 +188,12 @@ class VcfBrowser(App):
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal():
-            yield OptionList(id="variant-list")
+            yield VariantList(id="variant-list")
             yield Static("", id="detail")
         yield Static("", id="status-bar")
         yield Footer()
 
     def on_mount(self):
-        if self.scanning:
-            # 扫描中总量未定，滚动条无意义且每次追加触发全量重算（卡顿主因）
-            self.query_one("#variant-list", OptionList).show_scrollbar = False
         self._refresh_list()
         self.query_one("#variant-list", OptionList).focus()
         if self.scanning:
@@ -244,15 +264,31 @@ class VcfBrowser(App):
             self._view_dirty = True
         return default_view
 
+    def _extend_and_sync(self, batch: list[Variant]) -> bool:
+        """追加索引数据，按需增量延展列表窗口。
+
+        永不 clear 重建：clear_options 会重置滚动状态，导致用户视角周期性跳顶；
+        仅当窗口贴着数据尾部且未填满时才 add_options 增量补充。
+        """
+        ol = self.query_one("#variant-list", OptionList)
+        window_at_tail = self._win_start + ol.option_count >= len(self.view)
+        default_view = self._extend_index(batch)
+        if default_view and window_at_tail and ol.option_count < self.WINDOW:
+            start_new = len(self.view) - len(batch)
+            room = self.WINDOW - ol.option_count
+            ol.add_options([
+                self._make_option(self.variants[i])
+                for i in range(start_new, min(start_new + room, len(self.view)))
+            ])
+        return default_view
+
     def _append_batch(self, batch: list[Variant]):
-        """UI 线程：追加一批索引，默认视图下同步延展列表窗口。"""
+        """UI 线程：追加一批索引（增量，不打断浏览）。"""
         if not self.scanning:
             return
-        default_view = self._extend_index(batch)
-        if default_view:
-            # 仅重建当前窗口（WINDOW 条，毫秒级），不打断浏览
-            self._rebuild_window(self._win_start, self._abs_index())
+        self._extend_and_sync(batch)
         self._update_status_bar()
+        self._sync_position_indicator()
 
     def _finish_scan(self, new_all: list[Variant], skipped_add: int):
         """扫描完成：用全量结果对账补齐（节流回调可能漏尾），刷新视图。"""
@@ -260,19 +296,30 @@ class VcfBrowser(App):
         self.skipped += skipped_add
         appended = len(self.variants) - self._initial_count
         if appended < len(new_all):
-            default_view = self._extend_index(new_all[appended:])
-            if default_view:
-                self._rebuild_window(self._win_start, self._abs_index())
+            self._extend_and_sync(new_all[appended:])
         if self._view_dirty or self._order_dirty:
             self._apply_filter_sort()
         else:
             self._update_status_bar()
-        # 滚动条恢复延迟到空闲时（5.7M 项虚拟高度一次性重算会冻 UI 3s）
-        self.set_timer(1.5, self._restore_scrollbar)
+        self._sync_scrollbar()
+        self._sync_position_indicator()
         self.notify(f"扫描完成，共 {len(self.variants):,} 条变异", title="VCF")
 
-    def _restore_scrollbar(self):
-        self.query_one("#variant-list", OptionList).show_scrollbar = True
+    def _sync_scrollbar(self):
+        """滚动条仅在列表全量物化（≤WINDOW 条）时显示。
+
+        大列表只物化窗口，滚动条会虚假地暗示“拖到底 = 全部数据末尾”
+        （实际只能到 400 条缓冲底部），因此隐藏；改用位置指示器 + G/g 跳转。
+        """
+        ol = self.query_one("#variant-list", OptionList)
+        ol.show_scrollbar = len(self.view) <= self.WINDOW
+
+    def _sync_position_indicator(self):
+        """副标题位置指示器：当前行 / 总行数（含扫描中增长的总量）。"""
+        if self.view:
+            self.sub_title = f"{self._abs_index() + 1:,} / {len(self.view):,}"
+        else:
+            self.sub_title = "0 / 0"
 
     def _detail_fh(self):
         """详情回读复用句柄（避免每次导航 open/close）。"""
@@ -373,6 +420,8 @@ class VcfBrowser(App):
             self._show_detail(0)
         else:
             self.query_one("#detail", Static).update(Text("（无匹配变异）", style="dim"))
+        self._sync_scrollbar()
+        self._sync_position_indicator()
         self._update_status_bar()
 
     def _rebuild_window(self, win_start: int, highlight_abs: int):
@@ -639,6 +688,7 @@ class VcfBrowser(App):
         if event.option is not None:
             # 窗口内下标 → view 绝对下标
             self._show_detail(self._win_start + event.option_index)
+            self._sync_position_indicator()
 
     # ── Actions ──
     def action_cursor_down(self):
