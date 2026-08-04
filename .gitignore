@@ -31,3 +31,4 @@ test/__pycache__/
 
 # 未入库的测试样本/临时文件
 test/Weixin*
+test/big_chr.vcf

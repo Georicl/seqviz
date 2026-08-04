@@ -5,6 +5,7 @@
 
 import re
 import subprocess
+from functools import partial
 from pathlib import Path
 
 from rich.text import Text
@@ -130,9 +131,17 @@ class VcfBrowser(App):
         else:
             self.meta, self.variants, self.skipped = scan_vcf(filepath)
         self.view: list[int] = list(range(len(self.variants)))  # 过滤/排序后的下标映射
-        # 默认按位置排序（数字感知），即使文件本身未按坐标排序
-        self.view.sort(key=lambda i: (
-            _chrom_sort_key(self.variants[i].chrom), self.variants[i].pos))
+        self._chrom_keys: dict[str, tuple] | None = None  # 数字感知染色体键缓存
+        self._qual_order: list[int] | None = None         # 全局 QUAL 降序（首次 s 键懒计算）
+        self._types: list[VariantType] | None = None      # 变异类型缓存（SNP/InDel 过滤时懒计算）
+        self._stats_token = 0                             # 异步统计的版本号（防竞态）
+        # 默认按位置排序：VCF 通常已按坐标排序（O(n) 校验快路径），否则全量排序一次并缓存。
+        # 后续过滤在有序列表上做保序筛选，不再重复排序（5M 级免冻结的关键）。
+        if self._check_scan_sorted():
+            self._pos_order = list(self.view)
+        else:
+            self.view.sort(key=self._pos_key)
+            self._pos_order = list(self.view)
         self._win_start = 0  # 当前窗口在 view 中的起始下标
         self.filter_mode = "全部"
         self.sort_mode = "位置"
@@ -150,6 +159,60 @@ class VcfBrowser(App):
     def on_mount(self):
         self._refresh_list()
         self.query_one("#variant-list", OptionList).focus()
+
+    # ── 排序/过滤基础设施 ──
+    def _check_scan_sorted(self) -> bool:
+        """O(n) 校验扫描顺序是否已按（数字感知染色体, 坐标）有序（VCF 常态）。"""
+        key_cache: dict[str, tuple] = {}
+        prev_key = None
+        prev_pos = -1
+        for v in self.variants:
+            ck = key_cache.get(v.chrom)
+            if ck is None:
+                ck = key_cache[v.chrom] = _chrom_sort_key(v.chrom)
+            if prev_key is not None and (ck < prev_key or (ck == prev_key and v.pos < prev_pos)):
+                return False
+            prev_key, prev_pos = ck, v.pos
+        self._chrom_keys = key_cache
+        return True
+
+    def _pos_key(self, i: int):
+        """位置排序键（染色体键缓存，避免重复正则）。"""
+        if self._chrom_keys is None:
+            self._chrom_keys = {c: _chrom_sort_key(c) for c in {v.chrom for v in self.variants}}
+        v = self.variants[i]
+        return (self._chrom_keys[v.chrom], v.pos)
+
+    def _match_filter(self, i: int) -> bool:
+        """当前过滤模式是否命中第 i 条变异（全部模式不调用）。"""
+        v = self.variants[i]
+        if self.filter_mode == "PASS":
+            return v.filter == "PASS"
+        if self._types is None:
+            self._types = [classify_variant(x.ref, x.alt) for x in self.variants]
+        t = self._types[i]
+        if self.filter_mode == "SNP":
+            return t in (VariantType.TRANSITION, VariantType.TRANSVERSION)
+        return t in (VariantType.INSERTION, VariantType.DELETION)
+
+    def _apply_filter_sort(self):
+        """过滤/排序：在缓存的全局有序列表上做保序筛选，不重复全量排序。"""
+        if self.sort_mode == "QUAL":
+            if self._qual_order is None:
+                # 首次全局 QUAL 降序（缺失排最后），后续过滤直接复用
+                order = list(range(len(self.variants)))
+                order.sort(key=lambda i: (
+                    self.variants[i].qual is None,
+                    -(self.variants[i].qual or 0.0)))
+                self._qual_order = order
+            base = self._qual_order
+        else:
+            base = self._pos_order
+        if self.filter_mode == "全部":
+            self.view = list(base)
+        else:
+            self.view = [i for i in base if self._match_filter(i)]
+        self._refresh_list()
 
     # ── 列表渲染 ──
     def _make_option(self, v: Variant) -> Option:
@@ -320,42 +383,38 @@ class VcfBrowser(App):
     def _render_matrix(self, list_index: int):
         self.query_one("#detail", Static).update(self._build_matrix(list_index))
 
-    # ── 状态栏 ──
+    # ── 状态栏（异步统计，避免大文件过滤切换时冻结 UI） ──
     def _update_status_bar(self):
-        s = compute_stats([self.variants[i] for i in self.view])
+        """立即刷新计数/过滤/排序；重型统计后台计算后回填。"""
         parts = (
-            f" {s['total']} 变异 │ SNP {s['snp']} · InDel {s['indel']} │ "
-            f"Ts/Tv {s['ts_tv']:.2f} │ PASS {s['pass_count']} │ "
+            f" {len(self.view):,} 变异 │ [过滤:{self.filter_mode}] [排序:{self.sort_mode}] │ 统计中…"
+        )
+        if self.skipped:
+            parts += f" │ 跳过 {self.skipped} 行畸形数据"
+        self.query_one("#status-bar", Static).update(Text(parts))
+        self._stats_token += 1
+        token = self._stats_token
+        snapshot = list(self.view)
+        self.run_worker(partial(self._stats_worker, token, snapshot), thread=True, exclusive=False)
+
+    def _stats_worker(self, token: int, snapshot: list[int]):
+        """后台线程：计算统计后回 UI 线程回填（版本号防竞态）。"""
+        s = compute_stats([self.variants[i] for i in snapshot])
+        if token == self._stats_token:
+            try:
+                self.call_from_thread(self._apply_stats_bar, s)
+            except RuntimeError:
+                pass  # 应用已退出
+
+    def _apply_stats_bar(self, s: dict):
+        parts = (
+            f" {s['total']:,} 变异 │ SNP {s['snp']:,} · InDel {s['indel']:,} │ "
+            f"Ts/Tv {s['ts_tv']:.2f} │ PASS {s['pass_count']:,} │ "
             f"AF均值 {s['mean_af']:.2f} │ [过滤:{self.filter_mode}] [排序:{self.sort_mode}]"
         )
         if self.skipped:
             parts += f" │ 跳过 {self.skipped} 行畸形数据"
         self.query_one("#status-bar", Static).update(Text(parts))
-
-    # ── 过滤 / 排序 ──
-    def _apply_filter_sort(self):
-        idxs = list(range(len(self.variants)))
-        if self.filter_mode == "PASS":
-            idxs = [i for i in idxs if self.variants[i].filter == "PASS"]
-        elif self.filter_mode == "SNP":
-            idxs = [i for i in idxs if classify_variant(
-                self.variants[i].ref, self.variants[i].alt)
-                in (VariantType.TRANSITION, VariantType.TRANSVERSION)]
-        elif self.filter_mode == "InDel":
-            idxs = [i for i in idxs if classify_variant(
-                self.variants[i].ref, self.variants[i].alt)
-                in (VariantType.INSERTION, VariantType.DELETION)]
-        if self.sort_mode == "QUAL":
-            # QUAL 缺失排最后，其余降序
-            idxs.sort(key=lambda i: (
-                self.variants[i].qual is None,
-                -(self.variants[i].qual or 0.0)))
-        else:
-            # 数字感知染色体排序（chr2 < chr10）
-            idxs.sort(key=lambda i: (
-                _chrom_sort_key(self.variants[i].chrom), self.variants[i].pos))
-        self.view = idxs
-        self._refresh_list()
 
     # ── 剪贴板（与 browser.py 相同的分层回退策略） ──
     def _copy_to_clipboard(self, text: str) -> bool:
