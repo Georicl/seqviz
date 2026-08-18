@@ -781,7 +781,7 @@ class TestDetailPanelScroll:
         run(_t())
 
     def test_arrow_and_page_keys_scroll_detail(self, tmp_path):
-        """方向键 / PageUp / PageDown / Space / b 均可滚动聚焦的详情。"""
+        """方向键 / PageUp / PageDown 均可滚动聚焦的详情（Space/b 翻页已移除）。"""
         f = self._make_wide_vcf(tmp_path)
         async def _t():
             app = VcfBrowser(f)
@@ -798,12 +798,6 @@ class TestDetailPanelScroll:
                 after_pagedown = detail.scroll_offset.y
                 assert after_pagedown > 1
                 await pilot.press("pageup")
-                await pilot.pause()
-                assert detail.scroll_offset.y < after_pagedown
-                await pilot.press("space")
-                await pilot.pause()
-                assert detail.scroll_offset.y >= after_pagedown - 1
-                await pilot.press("b")
                 await pilot.pause()
                 assert detail.scroll_offset.y < after_pagedown
                 await pilot.press("g")
@@ -890,7 +884,7 @@ class TestDetailPanelScroll:
         run(_t())
 
     def test_list_navigation_unchanged_without_focus(self, tmp_path):
-        """列表聚焦时 j/k/space/g/G 仍为列表导航，详情不滚动。"""
+        """列表聚焦时 j/k/g/G 仍为列表导航，详情不滚动；Space/b 已无绑定不产生任何行为。"""
         f = self._make_wide_vcf(tmp_path)
         async def _t():
             app = VcfBrowser(f)
@@ -898,9 +892,9 @@ class TestDetailPanelScroll:
                 await pilot.pause()
                 detail = app.query_one("#detail", DetailPanel)
                 ol = app.query_one("#variant-list", OptionList)
-                await pilot.press("j", "k", "space", "g")
+                await pilot.press("j", "k", "space", "b", "g")
                 await pilot.pause()
-                assert ol.highlighted == 0  # space 下翻 PAGE 条后 g 回顶部
+                assert ol.highlighted == 0  # space/b 已移除，无任何副作用
                 assert detail.scroll_offset.y == 0
                 await pilot.press("G")
                 await pilot.pause()

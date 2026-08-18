@@ -165,7 +165,7 @@ class HelpScreen(ModalScreen):
         text = Text()
         rows = [
             ("j / k", "上下移动（右侧聚焦时滚动详情）"), ("n / p", "下/上一条变异"),
-            ("Space / b", "翻页（右侧聚焦时翻详情）"), ("g / G", "顶部 / 底部"),
+            ("g / G", "顶部 / 底部"),
             ("/", "搜索: ID / chr:pos / chr:a-b"), ("f", "过滤循环 (全部/PASS/SNP/InDel)"),
             ("s", "排序切换 (位置/QUAL)"), ("t", "详情 ↔ 基因型矩阵"),
             ("Tab / Esc", "左侧列表 ↔ 右侧详情面板"),
@@ -182,7 +182,7 @@ class DetailPanel(VerticalScroll, can_focus=True):
     """右侧详情/基因型矩阵面板：内容超出可视区域时可滚动浏览。
 
     内部 #detail-content 承载渲染文本（height:auto 撑开虚拟高度，容器滚动）。
-    Tab 聚焦后 ↑↓ / PageUp/PageDown / Space/b / g/G 滚动内容（j/k 由 App
+    Tab 聚焦后 ↑↓ / PageUp/PageDown / g/G 滚动内容（j/k 由 App
     优先绑定委托；n/p 始终为变异级导航）；Esc 返回左侧变异列表。未聚焦时不拦截任何按键，
     左侧列表的导航/搜索/过滤/排序/复制行为完全不变。
     """
@@ -190,8 +190,6 @@ class DetailPanel(VerticalScroll, can_focus=True):
     BINDINGS: Sequence[Binding] = [
         Binding("down", "detail_down", "详情下滚", show=False),
         Binding("up", "detail_up", "详情上滚", show=False),
-        Binding("space", "detail_page_down", "下翻页", show=False),
-        Binding("b", "detail_page_up", "上翻页", show=False),
         Binding("pageup", "detail_page_up", "上翻页", show=False),
         Binding("pagedown", "detail_page_down", "下翻页", show=False),
         Binding("g", "detail_home", "详情顶部", show=False),
@@ -246,8 +244,6 @@ class VcfBrowser(App):
         Binding("k", "cursor_up", "上移", show=True, priority=True),
         Binding("n", "next_variant", "下一条", show=False),
         Binding("p", "prev_variant", "上一条", show=False),
-        Binding("space", "page_down", "下翻页", show=True),
-        Binding("b", "page_up", "上翻页", show=True),
         Binding("g", "home", "顶部", show=True),
         Binding("G", "end", "底部", show=True),
         Binding("slash", "search", "搜索", show=True),
@@ -262,7 +258,6 @@ class VcfBrowser(App):
 
     # 列表窗口化虚拟化：OptionList 只物化当前窗口，避免大文件全量重建冻结 UI
     WINDOW = 400
-    PAGE = 20
 
     def __init__(self, filepath: Path, scanned=None, initial=None):
         """scanned=(meta, variants, skipped) 全量结果；
@@ -895,18 +890,6 @@ class VcfBrowser(App):
             self._detail().action_detail_up()
             return
         self._goto_abs(self._abs_index() - 1)
-
-    def action_page_down(self):
-        if self._detail_focused():
-            self._detail().action_detail_page_down()
-            return
-        self._goto_abs(self._abs_index() + self.PAGE)
-
-    def action_page_up(self):
-        if self._detail_focused():
-            self._detail().action_detail_page_up()
-            return
-        self._goto_abs(self._abs_index() - self.PAGE)
 
     def action_home(self):
         if self._detail_focused():
