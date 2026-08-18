@@ -131,7 +131,10 @@ def quality_bar(quality: str, width: int = 40) -> Text:
     medium = _get_quality_thresholds().get("medium", 20)
     low = _get_quality_thresholds().get("low", 10)
 
-    bin_size = max(1, len(scores) // width)
+    # 向上取整分桶：保证输出条数不超过 width（len 落在 (width, 2*width) 时
+    # 旧的 len // width 会退化为 bin_size=1，导致条数超过指定宽度）
+    width = max(1, width)
+    bin_size = max(1, (len(scores) + width - 1) // width)
     text = Text()
     for i in range(0, len(scores), bin_size):
         chunk = scores[i:i + bin_size]

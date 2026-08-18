@@ -107,6 +107,14 @@ class TestParseVariantLine:
         assert v.samples == {"s1": "0/1:15", "s2": "0/0:18"}
         assert v.offset == 100
 
+    def test_crlf_line_parsing(self):
+        """CRLF 行尾：\\r 不应残留进 raw 或最后一个样本列。"""
+        line = "chr1\t10234\trs123\tA\tG\t99.5\tPASS\tDP=45\tGT:DP:AD\t0/1:15:10,5\t0/0:18:18,0\r\n"
+        v = parse_variant_line(line, offset=0, sample_names=["S1", "S2"])
+        assert v is not None
+        assert v.raw == line.rstrip("\r\n")  # 修复前 raw 带尾随 \r
+        assert v.samples["S2"] == "0/0:18:18,0"  # 修复前带 '18,0\\r'
+
     def test_dot_id_and_qual(self):
         v = parse_variant_line("chr1\t5\t.\tA\tG\t.\tPASS\t.")
         assert v.id == "" and v.qual is None
@@ -267,6 +275,21 @@ class TestLoadVariantDetail:
         raw1 = first.raw
         load_variant_detail(SAMPLE_VCF, first, ["sample1", "sample2", "sample3"])
         assert first.raw == raw1
+
+    def test_crlf_detail_roundtrip(self, tmp_path):
+        """CRLF VCF 的详情回读：最后一个样本的 AD 应能解析，raw 不应带 \\r。"""
+        p = tmp_path / "crlf.vcf"
+        p.write_bytes(
+            b"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\r\n"
+            b"chr1\t10234\trs123\tA\tG\t99.5\tPASS\tDP=45\tGT:DP:AD\t0/1:15:10,5\t0/0:18:18,0\r\n"
+        )
+        meta, variants, skipped = scan_vcf(p)
+        assert skipped == 0
+        v = variants[0]
+        load_variant_detail(p, v, ["S1", "S2"])
+        gt = parse_genotype(v.samples["S2"], v.format_fields)
+        assert gt["AD"] == [18, 0]  # 修复前 int('0\\r') 失败 → []
+        assert not v.raw.endswith("\r")
 
 
 class TestComputeStats:

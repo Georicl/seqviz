@@ -190,6 +190,27 @@ class TestBrowseCommand:
         assert result.exit_code != 0
         assert "没有变异记录" in result.output
 
+    def test_browse_vcf_gz_rejected(self, tmp_path):
+        """压缩 VCF（.vcf.gz）应友好报错，而非静默按 FASTA 解析打开空界面。"""
+        import gzip
+        f = tmp_path / "x.vcf.gz"
+        with gzip.open(f, "wt") as fh:
+            fh.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+                     "chr1\t1\t.\tA\tG\t50\tPASS\t.\n")
+        result = runner.invoke(app, ["browse", str(f)])
+        assert result.exit_code == 1
+        assert "压缩 VCF" in result.output
+        assert "Traceback" not in result.output
+
+    def test_browse_unsupported_bam_rejected(self, tmp_path):
+        """明确不支持的文件类型（如 .bam）应友好报错。"""
+        f = tmp_path / "x.bam"
+        f.write_bytes(b"\x1f\x8b")
+        result = runner.invoke(app, ["browse", str(f)])
+        assert result.exit_code == 1
+        assert "暂不支持" in result.output
+        assert "Traceback" not in result.output
+
     def test_browse_mixed_vcf_and_fasta_skips_vcf(self, tmp_path, monkeypatch):
         """VCF 与序列文件混合打开：VCF 被剥离并提示，FastaBrowser 只收到序列文件。"""
         import seqviz.cli as cli_mod
@@ -227,12 +248,12 @@ class TestHelpCommand:
 class TestN50Value:
     def test_n50_numeric_correctness(self):
         """N50 数值正确性（回归：此前仅字符串存在断言）。"""
-        from seqviz.cli import _calc_n50
+        from seqviz.stats import calc_n50
         # 长度 [20, 12]，总长 32，半值 16；降序累计 20 >= 16 → N50 = 20
-        assert _calc_n50([20, 12], 32) == 20
+        assert calc_n50([20, 12], 32) == 20
         # [100, 50, 30, 20] 总长 200，半值 100；累计 100 >= 100 → N50 = 100
-        assert _calc_n50([100, 50, 30, 20], 200) == 100
-        assert _calc_n50([], 0) == 0
+        assert calc_n50([100, 50, 30, 20], 200) == 100
+        assert calc_n50([], 0) == 0
 
     def test_stats_n50_value_in_output(self):
         """stats 输出的 N50 应为具体数值（test.fa: 20bp + 12bp → N50=20）。"""
@@ -264,6 +285,46 @@ class TestEmptyFileCli:
         result = runner.invoke(app, ["fqview", str(p)])
         assert result.exit_code != 0
         assert "没有序列" in result.output
+
+
+class TestCommandOnDirectory:
+    """对目录执行文件命令应友好报错，而非裸 traceback。"""
+
+    def test_view_on_directory(self, tmp_path):
+        result = runner.invoke(app, ["view", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "不是文件" in result.output
+        assert "Traceback" not in result.output
+
+    def test_stats_on_directory(self, tmp_path):
+        result = runner.invoke(app, ["stats", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "不是文件" in result.output
+        assert "Traceback" not in result.output
+
+    def test_head_on_directory(self, tmp_path):
+        result = runner.invoke(app, ["head", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "不是文件" in result.output
+        assert "Traceback" not in result.output
+
+    def test_fqview_on_directory(self, tmp_path):
+        result = runner.invoke(app, ["fqview", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "不是文件" in result.output
+        assert "Traceback" not in result.output
+
+
+class TestVersionOption:
+    def test_version_flag(self):
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+        assert result.output.strip().startswith("seqviz ")
+
+    def test_version_short_flag(self):
+        result = runner.invoke(app, ["-V"])
+        assert result.exit_code == 0
+        assert "seqviz" in result.output
 
 
 class TestMalformedFastq:

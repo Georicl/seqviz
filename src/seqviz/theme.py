@@ -412,9 +412,18 @@ def build_vcf_browser_css(theme: dict) -> str:
     }}
     #detail {{
         width: 1fr;
-        padding: 0 1;
+        height: 1fr;
         background: {bg};
         color: {fg};
+        /* 透明边框占位：聚焦切色时不引起内容重排 */
+        border-left: thick {bg};
+    }}
+    #detail:focus {{
+        border-left: thick {accent};
+    }}
+    #detail-content {{
+        height: auto;
+        padding: 0 1;
     }}
     #status-bar {{
         dock: bottom;

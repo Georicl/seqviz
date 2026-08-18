@@ -1,6 +1,5 @@
 import gzip
 import re
-import subprocess
 from collections.abc import Generator
 from enum import Enum
 from pathlib import Path
@@ -22,7 +21,7 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
-from seqviz import config
+from seqviz import clipboard, config
 from seqviz.renderer import (
     colorize_quality,
     colorize_sequence,
@@ -127,6 +126,8 @@ def _iter_sequences(filepath: Path, fmt: FileFormat, start_idx: int = 0) -> Gene
                 offset += len(plus_line)
                 quality_line = f.readline()  # quality 行
                 offset += len(quality_line)
+                if not (seq_line and plus_line and quality_line):
+                    return  # 文件在记录中间截断：丢弃不完整记录，避免幻影条目
                 if idx >= start_idx:
                     header = header_line.strip()[1:].decode(errors="replace")
                     yield SequenceInfo(idx, header, record_offset, len(seq_line.strip()), has_quality=True)
@@ -154,8 +155,7 @@ class SequenceList(OptionList):
 
     def __init__(self, sequences: list[SequenceInfo], **kwargs):
         super().__init__(**kwargs)
-        for seq in sequences:
-            self.add_option(Option(self._make_label(seq), id=f"seq-{seq.index}"))
+        self.add_options([Option(self._make_label(seq), id=f"seq-{seq.index}") for seq in sequences])
 
     @staticmethod
     def _make_label(seq: SequenceInfo) -> str:
@@ -174,9 +174,10 @@ class SequenceList(OptionList):
         """为新扫描到的序列追加 Option（后台扫描用）。
 
         只加 Option，不追加数据 list——数据由 FileTab.sequences 统一持有。
+        批量 add_options：逐个 add_option 每次都标脏挂载中的 OptionList 触发重排重绘，
+        400K reads 下索引耗时从 ~70s 退化；一次批量添加可提速数倍（issue #4 复核验证）。
         """
-        for seq in new_seqs:
-            self.add_option(Option(self._make_label(seq), id=f"seq-{seq.index}"))
+        self.add_options([Option(self._make_label(seq), id=f"seq-{seq.index}") for seq in new_seqs])
 
 
 class SequenceView(Static):
@@ -228,6 +229,11 @@ class SequenceView(Static):
         if self._fh and not self._fh.closed:
             self._fh.close()
             self._fh = None
+
+    def on_unmount(self):
+        """组件自身卸载时关闭持久句柄（issue #4：Textual 先卸载子组件再触发 App 的
+        on_unmount，App 级 query(SequenceView) 此时已返回空集，钩子必须挂在组件自身）。"""
+        self.close()
 
     def load_sequence(self, seq_info: SequenceInfo):
         """用 offset 直接 seek 到目标位置。大序列分块加载。
@@ -810,17 +816,12 @@ class FastaBrowser(App):
             self.run_worker(self._background_scan, thread=True, exclusive=False)
 
     def on_unmount(self):
-        """应用退出时置取消标志并关闭所有持久文件句柄，避免文件描述符泄露。
+        """应用退出时置取消标志，通知后台扫描线程尽早退出。
 
-        后台扫描线程在每批之间检查取消标志后尽早退出，
-        避免退出后继续占用 CPU/IO 或向已关闭的事件循环投递更新。
+        文件句柄关闭由 SequenceView.on_unmount 在组件自身卸载时完成
+        （App 级钩子触发时子组件已卸载，query 拿不到 view）。
         """
         self._scan_cancelled = True
-        try:
-            for view in self.query(SequenceView):
-                view.close()
-        except Exception:  # noqa: BLE001, S110
-            pass  # 应用启动期异常时 screen 栈可能不存在，避免掩盖真实错误
 
     def _background_scan(self):
         """后台扫描剩余序列（在独立线程中运行，避免阻塞 Textual 事件循环）。
@@ -1062,40 +1063,11 @@ class FastaBrowser(App):
 
     # ── 导出 & 复制 ──
     def _copy_to_clipboard(self, text: str) -> bool:
-        """复制文本到剪贴板，成功返回 True。
+        """复制文本到剪贴板，成功返回 True（系统工具优先，失败回退 OSC 52）。
 
-        策略：系统工具优先（反馈可靠），失败后回退 OSC 52（适用于无图形界面/SSH 场景）。
+        实现见 clipboard.py，与 VcfBrowser 共用同一套回退策略。
         """
-        import platform
-        system = platform.system()
-        data = text.encode()
-        try:
-            if system == "Darwin":  # macOS
-                subprocess.run(["pbcopy"], input=data, check=True)
-                return True
-            elif system == "Linux":
-                # 依次尝试 xclip / xsel / wl-copy，任一成功即可
-                for cmd in (
-                    ["xclip", "-selection", "clipboard"],
-                    ["xsel", "--clipboard", "--input"],
-                    ["wl-copy"],
-                ):
-                    try:
-                        subprocess.run(cmd, input=data, check=True)
-                        return True
-                    except (OSError, subprocess.CalledProcessError):
-                        continue
-            else:  # Windows
-                subprocess.run(["clip"], input=data, check=True)
-                return True
-        except (OSError, subprocess.CalledProcessError):
-            pass  # 工具缺失或异常退出（非 OSError），回退 OSC 52
-        # 回退: OSC 52 —— 通过终端转义序列写入本地剪贴板（需终端支持，SSH 下同样有效）
-        try:
-            self.copy_to_clipboard(text)
-            return True
-        except Exception:  # noqa: BLE001
-            return False  # 剪贴板不可用
+        return clipboard.copy_to_clipboard(text, self.copy_to_clipboard)
 
     def _handle_range_copy(self, value: str):
         """解析位置范围并复制对应序列片段。"""

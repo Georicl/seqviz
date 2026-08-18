@@ -127,7 +127,7 @@ def parse_meta(header_lines: list[str]) -> VcfMeta:
             lm = _LEN_RE.search(line)
             if m:
                 meta.contigs[m.group(1)] = int(lm.group(1)) if lm else 0
-        elif line.startswith("##INFO=") or line.startswith("##FORMAT="):
+        elif line.startswith(("##INFO=", "##FORMAT=")):
             m = _ID_RE.search(line)
             dm = _DESC_RE.search(line)
             target = meta.info_defs if line.startswith("##INFO=") else meta.format_defs
@@ -186,8 +186,12 @@ def _index_line(line: bytes, offset: int) -> Variant | None:
 
 def parse_variant_line(line: str, offset: int = 0,
                        sample_names: list[str] | None = None) -> Variant | None:
-    """完整解析单条数据行；畸形行（<8 列或 POS 非整数）返回 None。"""
-    raw = line.rstrip("\n")
+    """完整解析单条数据行；畸形行（<8 列或 POS 非整数）返回 None。
+
+    注意同时去除 \\r\\n：CRLF 行尾文件的 \\r 若残留会污染 raw（y 复制）
+    与最后一个样本列（AD 等数值字段解析失败）。
+    """
+    raw = line.rstrip("\r\n")
     parts = raw.split("\t")
     if len(parts) < 8 or parts[0].startswith("#"):
         return None

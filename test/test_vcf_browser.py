@@ -5,7 +5,7 @@ from pathlib import Path
 from textual.widgets import OptionList
 
 from seqviz.vcf import scan_vcf_quick
-from seqviz.vcf_browser import VcfBrowser, AbsoluteScrollbar
+from seqviz.vcf_browser import AbsoluteScrollbar, DetailPanel, VcfBrowser
 
 TEST_DIR = Path(__file__).parent
 SAMPLE_VCF = TEST_DIR / "sample.vcf"
@@ -204,9 +204,9 @@ class TestMatrixInfoCopy:
                 await pilot.pause()
                 await pilot.press("i")
                 await pilot.pause()
-                detail = app.query_one("#detail")
+                content = app.query_one("#detail-content")
                 # 信息面板渲染为 Rich Text，检查其纯文本内容
-                text = str(detail.render())
+                text = str(content.render())
                 assert "VCFv4.3" in text
                 assert "chr1" in text
                 # 规格要求：INFO/FORMAT 字段定义也要展示
@@ -728,4 +728,202 @@ class TestChromNaturalSort:
                 await pilot.pause()
                 order = [app.variants[i].chrom for i in app.view]
                 assert order == ["chr1", "chr2", "chr10"]  # 非字典序的 chr1,chr10,chr2
+        run(_t())
+
+
+# ──────────────────────────────────────────────
+# 右侧详情/基因型矩阵滚动浏览
+# ──────────────────────────────────────────────
+class TestDetailPanelScroll:
+    @staticmethod
+    def _make_wide_vcf(tmp_path, samples=40):
+        """多样本 + AD 字段的 VCF：单条详情约 3 行/样本，远超可视区域。"""
+        names = [f"sample{i:02d}" for i in range(samples)]
+        lines = [
+            "##fileformat=VCFv4.3",
+            '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
+            '##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">',
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + "\t".join(names),
+            "chr1\t1000\t.\tA\tG\t50\tPASS\t.\tGT:AD\t" + "\t".join(["0/1:10,5"] * samples),
+            "chr1\t2000\t.\tC\tT\t50\tPASS\t.\tGT:AD\t" + "\t".join(["1/1:0,20"] * samples),
+        ]
+        f = tmp_path / "wide.vcf"
+        f.write_text("\n".join(lines) + "\n")
+        return f
+
+    @staticmethod
+    def _max_scroll(detail) -> float:
+        return max(detail.virtual_size.height - detail.size.height, 0)
+
+    def test_tab_focuses_detail_and_jk_scrolls(self, tmp_path):
+        """Tab 聚焦右侧后，j/k 滚动详情而非移动列表。"""
+        f = self._make_wide_vcf(tmp_path)
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                detail = app.query_one("#detail", DetailPanel)
+                ol = app.query_one("#variant-list", OptionList)
+                assert self._max_scroll(detail) > 0  # 内容确实超出可视区域
+                assert not detail.has_focus
+                await pilot.press("tab")
+                await pilot.pause()
+                assert detail.has_focus
+                assert detail.scroll_offset.y == 0
+                await pilot.press("j", "j")
+                await pilot.pause()
+                assert detail.scroll_offset.y > 0
+                after_j = detail.scroll_offset.y
+                await pilot.press("k")
+                await pilot.pause()
+                assert detail.scroll_offset.y < after_j
+                assert ol.highlighted == 0  # 列表未受影响
+        run(_t())
+
+    def test_arrow_and_page_keys_scroll_detail(self, tmp_path):
+        """方向键 / PageUp / PageDown / Space / b 均可滚动聚焦的详情。"""
+        f = self._make_wide_vcf(tmp_path)
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                detail = app.query_one("#detail", DetailPanel)
+                await pilot.press("tab")
+                await pilot.pause()
+                await pilot.press("down")
+                await pilot.pause()
+                assert detail.scroll_offset.y > 0
+                await pilot.press("pagedown")
+                await pilot.pause()
+                after_pagedown = detail.scroll_offset.y
+                assert after_pagedown > 1
+                await pilot.press("pageup")
+                await pilot.pause()
+                assert detail.scroll_offset.y < after_pagedown
+                await pilot.press("space")
+                await pilot.pause()
+                assert detail.scroll_offset.y >= after_pagedown - 1
+                await pilot.press("b")
+                await pilot.pause()
+                assert detail.scroll_offset.y < after_pagedown
+                await pilot.press("g")
+                await pilot.pause()
+                assert detail.scroll_offset.y == 0
+        run(_t())
+
+    def test_gG_scroll_focused_detail_top_bottom(self, tmp_path):
+        """详情聚焦时 g/G 滚动到顶/到底（而非跳转列表）。"""
+        f = self._make_wide_vcf(tmp_path)
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                detail = app.query_one("#detail", DetailPanel)
+                ol = app.query_one("#variant-list", OptionList)
+                await pilot.press("tab")
+                await pilot.pause()
+                await pilot.press("G")
+                await pilot.pause()
+                assert detail.scroll_offset.y >= self._max_scroll(detail) - 1
+                assert ol.highlighted == 0  # 未跳转列表
+                await pilot.press("g")
+                await pilot.pause()
+                assert detail.scroll_offset.y == 0
+        run(_t())
+
+    def test_escape_returns_focus_to_list(self, tmp_path):
+        """Esc 返回变异列表，此后 j/k 恢复列表导航语义。"""
+        f = self._make_wide_vcf(tmp_path)
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                detail = app.query_one("#detail", DetailPanel)
+                ol = app.query_one("#variant-list", OptionList)
+                await pilot.press("tab")
+                await pilot.pause()
+                assert detail.has_focus
+                await pilot.press("escape")
+                await pilot.pause()
+                assert ol.has_focus
+                await pilot.press("j")
+                await pilot.pause()
+                assert ol.highlighted == 1  # 恢复列表导航
+                assert detail.scroll_offset.y == 0
+        run(_t())
+
+    def test_navigating_variants_resets_detail_scroll(self, tmp_path):
+        """详情滚动后切换变异，详情自动回到顶部。"""
+        f = self._make_wide_vcf(tmp_path)
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                detail = app.query_one("#detail", DetailPanel)
+                await pilot.press("tab", "G")  # 详情滚到底
+                await pilot.pause()
+                assert detail.scroll_offset.y > 0
+                await pilot.press("escape", "j")  # 回列表并下一条
+                await pilot.pause()
+                assert detail.scroll_offset.y == 0
+        run(_t())
+
+    def test_matrix_view_scrollable(self, tmp_path):
+        """基因型矩阵视图（多样本超宽）同样可滚动。"""
+        f = self._make_wide_vcf(tmp_path)
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 15)) as pilot:
+                await pilot.pause()
+                await pilot.press("t")  # 切换基因型矩阵
+                await pilot.pause()
+                detail = app.query_one("#detail", DetailPanel)
+                assert self._max_scroll(detail) > 0
+                await pilot.press("tab")
+                await pilot.pause()
+                await pilot.press("G")
+                await pilot.pause()
+                assert detail.scroll_offset.y >= self._max_scroll(detail) - 1
+                await pilot.press("g")
+                await pilot.pause()
+                assert detail.scroll_offset.y == 0
+        run(_t())
+
+    def test_list_navigation_unchanged_without_focus(self, tmp_path):
+        """列表聚焦时 j/k/space/g/G 仍为列表导航，详情不滚动。"""
+        f = self._make_wide_vcf(tmp_path)
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                detail = app.query_one("#detail", DetailPanel)
+                ol = app.query_one("#variant-list", OptionList)
+                await pilot.press("j", "k", "space", "g")
+                await pilot.pause()
+                assert ol.highlighted == 0  # space 下翻 PAGE 条后 g 回顶部
+                assert detail.scroll_offset.y == 0
+                await pilot.press("G")
+                await pilot.pause()
+                assert ol.highlighted == ol.option_count - 1  # G 跳列表末尾
+        run(_t())
+
+    def test_np_always_navigates_variants_even_when_detail_focused(self, tmp_path):
+        """n/p 始终为变异级导航：详情聚焦时仍移动列表而非滚动详情。"""
+        f = self._make_wide_vcf(tmp_path)
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                detail = app.query_one("#detail", DetailPanel)
+                ol = app.query_one("#variant-list", OptionList)
+                await pilot.press("tab")
+                await pilot.pause()
+                assert detail.has_focus
+                await pilot.press("n")
+                await pilot.pause()
+                assert ol.highlighted == 1  # n 仍导航列表
+                assert detail.scroll_offset.y == 0  # 切换变异后详情回顶
+                await pilot.press("p")
+                await pilot.pause()
+                assert ol.highlighted == 0
         run(_t())

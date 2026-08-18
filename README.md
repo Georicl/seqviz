@@ -8,7 +8,7 @@
 
 [安装](#安装) · [快速开始](#快速开始) · [浏览器](#交互式浏览器) · [配置](#配置)
 
-<sup>v0.6.3 · Python >= 3.12</sup>
+<sup>v0.7.0rc1 · Python >= 3.12</sup>
 
 </div>
 
@@ -206,7 +206,7 @@ Apple Silicon + SMB 网络卷实测：
 ```bash
 git clone https://github.com/Georicl/seqviz.git && cd seqviz
 uv sync
-uv run pytest test/ -v          # 254 个测试
+uv run pytest test/ -v          # 327 个测试
 ```
 
 ## License

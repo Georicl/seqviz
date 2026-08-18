@@ -4,19 +4,21 @@
 """
 
 import re
-import subprocess
+from collections.abc import Sequence
 from functools import partial
+from itertools import pairwise
 from pathlib import Path
 
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Footer, Header, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
+from seqviz import clipboard
 from seqviz import theme as theme_mod
 from seqviz.vcf import (
     Variant,
@@ -148,7 +150,7 @@ class HelpScreen(ModalScreen):
     }
     """
 
-    BINDINGS = [
+    BINDINGS: Sequence[Binding] = [
         Binding("question_mark", "dismiss", "关闭"),
         Binding("escape", "dismiss", "关闭"),
         Binding("q", "dismiss", "关闭"),
@@ -162,10 +164,11 @@ class HelpScreen(ModalScreen):
         panel.border_title = "Seqviz VCF — 快捷键"
         text = Text()
         rows = [
-            ("j / k", "上下移动"), ("n / p", "下/上一条变异"),
-            ("Space / b", "翻页"), ("g / G", "顶部 / 底部"),
+            ("j / k", "上下移动（右侧聚焦时滚动详情）"), ("n / p", "下/上一条变异"),
+            ("Space / b", "翻页（右侧聚焦时翻详情）"), ("g / G", "顶部 / 底部"),
             ("/", "搜索: ID / chr:pos / chr:a-b"), ("f", "过滤循环 (全部/PASS/SNP/InDel)"),
             ("s", "排序切换 (位置/QUAL)"), ("t", "详情 ↔ 基因型矩阵"),
+            ("Tab / Esc", "左侧列表 ↔ 右侧详情面板"),
             ("i", "文件信息"), ("y", "复制当前 VCF 行"),
             ("?", "帮助"), ("q", "退出"),
         ]
@@ -175,6 +178,62 @@ class HelpScreen(ModalScreen):
         panel.update(text)
 
 
+class DetailPanel(VerticalScroll, can_focus=True):
+    """右侧详情/基因型矩阵面板：内容超出可视区域时可滚动浏览。
+
+    内部 #detail-content 承载渲染文本（height:auto 撑开虚拟高度，容器滚动）。
+    Tab 聚焦后 ↑↓ / PageUp/PageDown / Space/b / g/G 滚动内容（j/k 由 App
+    优先绑定委托；n/p 始终为变异级导航）；Esc 返回左侧变异列表。未聚焦时不拦截任何按键，
+    左侧列表的导航/搜索/过滤/排序/复制行为完全不变。
+    """
+
+    BINDINGS: Sequence[Binding] = [
+        Binding("down", "detail_down", "详情下滚", show=False),
+        Binding("up", "detail_up", "详情上滚", show=False),
+        Binding("space", "detail_page_down", "下翻页", show=False),
+        Binding("b", "detail_page_up", "上翻页", show=False),
+        Binding("pageup", "detail_page_up", "上翻页", show=False),
+        Binding("pagedown", "detail_page_down", "下翻页", show=False),
+        Binding("g", "detail_home", "详情顶部", show=False),
+        Binding("G", "detail_end", "详情底部", show=False),
+        Binding("escape", "back_to_list", "返回列表", show=False),
+    ]
+
+    STEP = 3  # 每次 j/k/↑/↓ 滚动行数（与滚轮默认步幅一致）
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="detail-content")
+
+    def content(self) -> Static:
+        return self.query_one("#detail-content", Static)
+
+    def set_content(self, renderable) -> None:
+        """更新内容并回到顶部（切换变异/视图时调用）。"""
+        self.content().update(renderable)
+        self.scroll_home(animate=False)
+
+    def action_detail_down(self):
+        self.scroll_relative(0, self.STEP, animate=False)
+
+    def action_detail_up(self):
+        self.scroll_relative(0, -self.STEP, animate=False)
+
+    def action_detail_page_down(self):
+        self.scroll_relative(0, self.size.height, animate=False)
+
+    def action_detail_page_up(self):
+        self.scroll_relative(0, -self.size.height, animate=False)
+
+    def action_detail_home(self):
+        self.scroll_home(animate=False)
+
+    def action_detail_end(self):
+        self.scroll_end(animate=False)
+
+    def action_back_to_list(self):
+        self.app.query_one("#variant-list", OptionList).focus()
+
+
 class VcfBrowser(App):
     """VCF 变异浏览器。"""
 
@@ -182,11 +241,11 @@ class VcfBrowser(App):
     DARK = theme_mod.is_dark_theme(theme_mod.get_theme_name())
     CSS = theme_mod.build_vcf_browser_css(theme_mod.get_theme())
 
-    BINDINGS = [
+    BINDINGS: Sequence[Binding] = [
         Binding("j", "cursor_down", "下移", show=True, priority=True),
         Binding("k", "cursor_up", "上移", show=True, priority=True),
-        Binding("n", "cursor_down", "下一条", show=False),
-        Binding("p", "cursor_up", "上一条", show=False),
+        Binding("n", "next_variant", "下一条", show=False),
+        Binding("p", "prev_variant", "上一条", show=False),
         Binding("space", "page_down", "下翻页", show=True),
         Binding("b", "page_up", "上翻页", show=True),
         Binding("g", "home", "顶部", show=True),
@@ -248,7 +307,7 @@ class VcfBrowser(App):
         with Horizontal():
             yield VariantList(id="variant-list")
             yield AbsoluteScrollbar(id="abs-scrollbar")
-            yield Static("", id="detail")
+            yield DetailPanel(id="detail")
         yield Static("", id="status-bar")
         yield Footer()
 
@@ -372,7 +431,7 @@ class VcfBrowser(App):
         if ok and self.variants and not self._pos_ge(batch[0], self.variants[-1]):
             ok = False
         if ok:
-            for x, y in zip(batch, batch[1:]):
+            for x, y in pairwise(batch):
                 if not self._pos_ge(y, x):
                     ok = False
                     break
@@ -451,10 +510,17 @@ class VcfBrowser(App):
         # 位置变化 → 同步真实比例滚动条滑块
         self.query_one("#abs-scrollbar", AbsoluteScrollbar).refresh()
 
+    def _detail(self) -> DetailPanel:
+        return self.query_one("#detail", DetailPanel)
+
+    def _detail_focused(self) -> bool:
+        """右侧详情面板是否持有焦点（j/k 等优先绑定据此委托滚动）。"""
+        return isinstance(self.focused, DetailPanel)
+
     def _detail_fh(self):
         """详情回读复用句柄（避免每次导航 open/close）。"""
         if self._fh is None or self._fh.closed:
-            self._fh = open(self.filepath, "rb")
+            self._fh = open(self.filepath, "rb")  # noqa: SIM115 — 句柄跨调用复用，on_unmount 统一关闭
         return self._fh
 
     # ── 排序/过滤基础设施 ──
@@ -549,7 +615,7 @@ class VcfBrowser(App):
         if self.view:
             self._show_detail(0)
         else:
-            self.query_one("#detail", Static).update(Text("（无匹配变异）", style="dim"))
+            self._detail().set_content(Text("（无匹配变异）", style="dim"))
         self._sync_scrollbar()
         self._sync_position_indicator()
         self._update_status_bar()
@@ -648,7 +714,7 @@ class VcfBrowser(App):
         idx = self.view[list_index]
         v = self.variants[idx]
         load_variant_detail(self.filepath, v, self.meta.samples, fh=self._detail_fh())
-        self.query_one("#detail", Static).update(self._build_detail(v))
+        self._detail().set_content(self._build_detail(v))
 
     def _detail_text(self) -> str:
         """当前详情的纯文本（供测试断言）。"""
@@ -687,7 +753,7 @@ class VcfBrowser(App):
         return str(self._build_matrix(self._abs_index()))
 
     def _render_matrix(self, list_index: int):
-        self.query_one("#detail", Static).update(self._build_matrix(list_index))
+        self._detail().set_content(self._build_matrix(list_index))
 
     # ── 状态栏（异步统计，避免大文件过滤切换时冻结 UI） ──
     def _update_status_bar(self):
@@ -733,37 +799,10 @@ class VcfBrowser(App):
             parts += f" │ 跳过 {self.skipped} 行畸形数据"
         self.query_one("#status-bar", Static).update(Text(parts))
 
-    # ── 剪贴板（与 browser.py 相同的分层回退策略） ──
+    # ── 剪贴板（与 browser.py 共用 clipboard.py 的同一套分层回退策略） ──
     def _copy_to_clipboard(self, text: str) -> bool:
         """系统工具优先，失败后回退 OSC 52。"""
-        import platform
-        system = platform.system()
-        data = text.encode()
-        try:
-            if system == "Darwin":
-                subprocess.run(["pbcopy"], input=data, check=True)
-                return True
-            elif system == "Linux":
-                for cmd in (
-                    ["xclip", "-selection", "clipboard"],
-                    ["xsel", "--clipboard", "--input"],
-                    ["wl-copy"],
-                ):
-                    try:
-                        subprocess.run(cmd, input=data, check=True)
-                        return True
-                    except (OSError, subprocess.CalledProcessError):
-                        continue
-            else:  # Windows
-                subprocess.run(["clip"], input=data, check=True)
-                return True
-        except (OSError, subprocess.CalledProcessError):
-            pass
-        try:
-            self.copy_to_clipboard(text)
-            return True
-        except Exception:  # noqa: BLE001
-            return False
+        return clipboard.copy_to_clipboard(text, self.copy_to_clipboard)
 
     # ── 搜索命令栏 ──
     async def _show_search_bar(self) -> None:
@@ -777,7 +816,7 @@ class VcfBrowser(App):
     def _remove_search_bar(self) -> None:
         try:
             self.query_one("#search-input", Input).remove()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 — 搜索栏不存在时静默即可
             pass
 
     def _get_search_bar(self) -> Input | None:
@@ -844,23 +883,50 @@ class VcfBrowser(App):
             self._sync_position_indicator()
 
     # ── Actions ──
+    # 右侧详情聚焦时，导航键委托给 DetailPanel 滚动；否则保持列表导航语义。
     def action_cursor_down(self):
+        if self._detail_focused():
+            self._detail().action_detail_down()
+            return
         self._goto_abs(self._abs_index() + 1)
 
     def action_cursor_up(self):
+        if self._detail_focused():
+            self._detail().action_detail_up()
+            return
         self._goto_abs(self._abs_index() - 1)
 
     def action_page_down(self):
+        if self._detail_focused():
+            self._detail().action_detail_page_down()
+            return
         self._goto_abs(self._abs_index() + self.PAGE)
 
     def action_page_up(self):
+        if self._detail_focused():
+            self._detail().action_detail_page_up()
+            return
         self._goto_abs(self._abs_index() - self.PAGE)
 
     def action_home(self):
+        if self._detail_focused():
+            self._detail().action_detail_home()
+            return
         self._goto_abs(0)
 
     def action_end(self):
+        if self._detail_focused():
+            self._detail().action_detail_end()
+            return
         self._goto_abs(len(self.view) - 1)
+
+    def action_next_variant(self):
+        """n：始终导航变异（不受右侧详情焦点影响，保持变异级导航语义）。"""
+        self._goto_abs(self._abs_index() + 1)
+
+    def action_prev_variant(self):
+        """p：始终导航变异（不受右侧详情焦点影响，保持变异级导航语义）。"""
+        self._goto_abs(self._abs_index() - 1)
 
     async def action_search(self):
         await self._show_search_bar()
@@ -909,7 +975,7 @@ class VcfBrowser(App):
             txt.append("\nFORMAT 定义:\n", style="bold cyan")
             for fid, desc in self.meta.format_defs.items():
                 txt.append(f"  {fid:<10}{desc}\n")
-        self.query_one("#detail", Static).update(txt)
+        self._detail().set_content(txt)
 
     def action_copy_line(self):
         if not self.view:
