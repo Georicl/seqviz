@@ -231,14 +231,82 @@ class TestBrowseCommand:
         assert captured["paths"] == [str(fa)]  # VCF 未进入 FastaBrowser
 
 
+# ──────────────────────────────────────────────
+# 浏览为主功能：seqviz <路径> 直接打开浏览器
+# ──────────────────────────────────────────────
+class TestDefaultBrowseRouting:
+    def test_path_without_subcommand_opens_browser(self, monkeypatch):
+        """seqviz test.fa ≡ seqviz browse test.fa（主功能直达）。"""
+        import seqviz.cli as cli_mod
+        captured: dict = {}
+
+        def fake_run(self):
+            captured["n_tabs"] = len(self.file_tabs)
+
+        monkeypatch.setattr(cli_mod.FastaBrowser, "run", fake_run)
+        result = runner.invoke(app, [TEST_FA])
+        assert result.exit_code == 0
+        assert captured["n_tabs"] == 1
+
+    def test_missing_path_without_subcommand(self):
+        """seqviz nonexistent.fa 友好报错而非裸 traceback / 未知命令。"""
+        result = runner.invoke(app, ["nonexistent_file.fa"])
+        assert result.exit_code != 0
+        assert "路径不存在" in result.output
+
+    def test_vcf_without_subcommand_routes_to_vcf_browser(self, monkeypatch):
+        """seqviz x.vcf 直接路由到 VcfBrowser。"""
+        import seqviz.cli as cli_mod
+        from seqviz import vcf_browser as vcf_browser_mod
+        called: dict = {}
+
+        def fake_vcf_run(self):
+            called["vcf"] = str(self.filepath)
+
+        monkeypatch.setattr(vcf_browser_mod.VcfBrowser, "run", fake_vcf_run)
+        monkeypatch.setattr(cli_mod.FastaBrowser, "run", lambda self: called.__setitem__("fasta", True))
+        vcf_path = str(Path(__file__).parent / "sample.vcf")
+        result = runner.invoke(app, [vcf_path])
+        assert result.exit_code == 0
+        assert called.get("vcf") == vcf_path
+        assert "fasta" not in called
+
+    def test_no_args_opens_current_directory(self, monkeypatch):
+        """seqviz 不带参数：默认打开当前目录文件浏览器。"""
+        import seqviz.cli as cli_mod
+        captured: dict = {}
+
+        def fake_launch(paths):
+            captured["paths"] = [str(p) for p in paths]
+
+        monkeypatch.setattr(cli_mod, "_launch_browser", fake_launch)
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0
+        assert captured["paths"] == ["."]
+
+    def test_subcommands_not_shadowed(self):
+        """已知子命令不被默认路由吞掉：view 仍正常执行。"""
+        result = runner.invoke(app, ["view", TEST_FA])
+        assert result.exit_code == 0
+        assert ">" in result.output
+
+    def test_options_not_routed_to_browse(self):
+        """以 - 开头的参数不被当作路径路由（--help 正常显示）。"""
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+        assert "Usage" in result.output
+
+
 class TestHelpCommand:
     def test_main_help(self):
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
         assert "view" in result.output
         assert "stats" in result.output
-        assert "browse" in result.output
         assert "config" in result.output
+        # browse 为主功能默认路由，不再作为独立子命令展示
+        assert "browse" not in result.output
+        assert "seqviz reads.fastq" in result.output or "直接跟文件" in result.output
 
     def test_view_help(self):
         result = runner.invoke(app, ["view", "--help"])

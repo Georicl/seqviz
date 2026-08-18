@@ -57,6 +57,10 @@ uv run seqviz --help
 ## 快速开始
 
 ```bash
+# 直接打开文件（主功能，自动识别 FASTA/FASTQ/VCF）
+seqviz genome.fasta
+seqviz variants.vcf
+
 # 不传文件？打开目录选择器
 seqviz
 
@@ -66,28 +70,24 @@ seqviz fqview reads.fastq
 
 # 统计
 seqviz stats genome.fasta
-
-# 交互式浏览
-seqviz browse genome.fasta
-seqviz browse variants.vcf
 ```
 
 ## 命令
 
 | 命令 | 干什么的 |
 |------|---------|
+| `seqviz <path>` | 交互式浏览器（主功能，自动识别 FASTA/FASTQ/VCF） |
 | `seqviz` | 打开目录文件选择器 |
 | `seqviz view <file>` | 彩色看 FASTA |
 | `seqviz fqview <file>` | 彩色看 FASTQ（带质量值） |
 | `seqviz head <file>` | 看前 N 条序列 |
 | `seqviz stats <file>` | 统计摘要 |
-| `seqviz browse <path>` | 交互式浏览器（自动识别 FASTA/FASTQ/VCF） |
 | `seqviz config [--init]` | 看/生成配置 |
 
 ## 交互式浏览器
 
 ```bash
-seqviz browse genome.fasta
+seqviz genome.fasta
 ```
 
 左边序列列表（虚拟化渲染），右边序列详情（按需加载）。
@@ -106,7 +106,7 @@ seqviz browse genome.fasta
 
 ### 文件选择器
 
-传目录给 `browse`（或直接运行 `seqviz`）就会启动。自动扫描 `.fa .fasta .fna .fq .fastq .vcf` 及 `.gz`。
+传目录（如 `seqviz data/`，或直接运行 `seqviz`）就会启动。自动扫描 `.fa .fasta .fna .fq .fastq .vcf` 及 `.gz`。
 
 | 按键 | 功能 |
 |------|------|
@@ -119,7 +119,7 @@ seqviz browse genome.fasta
 ## VCF 变异浏览器
 
 ```bash
-seqviz browse variants.vcf
+seqviz variants.vcf
 ```
 
 左边变异列表，右边详情面板或基因型矩阵。
@@ -207,7 +207,7 @@ Apple Silicon + SMB 网络卷实测：
 ```bash
 git clone https://github.com/Georicl/seqviz.git && cd seqviz
 uv sync
-uv run pytest test/ -v          # 327 个测试
+uv run pytest test/ -v          # 333 个测试
 ```
 
 ## License

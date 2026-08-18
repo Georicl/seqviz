@@ -3,6 +3,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 from rich.table import Table
+from typer.core import TyperGroup
 
 from seqviz import config as config_mod
 from seqviz import theme as theme_mod
@@ -20,7 +21,21 @@ from seqviz.renderer import (
 from seqviz.seq_type import SeqType, detect_seq_type
 from seqviz.stats import calc_n50, calc_sequence_stats
 
-app = typer.Typer()
+
+class _DefaultBrowseGroup(TyperGroup):
+    """浏览是主功能：首个参数不是已知子命令时，默认路由到 browse。
+
+    seqviz test.fa      ≡ seqviz browse test.fa
+    seqviz view test.fa → 子命令 view 不变
+    """
+
+    def parse_args(self, ctx, args):
+        if args and not args[0].startswith("-") and args[0] not in self.commands:
+            args = ["browse", *args]
+        return super().parse_args(ctx, args)
+
+
+app = typer.Typer(cls=_DefaultBrowseGroup)
 console = Console()
 
 # 明确不支持的文件类型（避免按 FASTA 静默解析产生空界面）
@@ -185,7 +200,14 @@ def main(
 ):
     """seqviz — 生物序列数据终端可视化工具。
 
-    不带任何命令时，默认打开当前目录的文件浏览器。
+    直接跟文件/目录路径即可打开交互式浏览器（主功能）：
+
+        seqviz reads.fastq      打开单个文件
+
+        seqviz data/            目录文件选择器
+
+    不带任何参数时，默认打开当前目录的文件浏览器。
+    其余子命令（view/stats/head/fqview/config）为辅助功能。
     """
     if ctx.invoked_subcommand is None:
         _launch_browser([Path(".")])
@@ -339,11 +361,11 @@ def fqview(
     console.print(f"[dim]共显示 {count} 条 reads[/dim]")
 
 
-@app.command()
+@app.command(hidden=True)
 def browse(
     files: list[Path] = typer.Argument(help="FASTA/FASTQ 文件或目录路径（目录会启动文件选择器）"),
 ):
-    """交互式浏览 FASTA/FASTQ/VCF 文件（支持多文件标签页、目录浏览）。"""
+    """交互式浏览 FASTA/FASTQ/VCF 文件（主功能；等价于 seqviz <路径>，保留作兼容别名）。"""
     for p in files:  # 校验路径存在，与其他子命令的友好报错保持一致
         if not p.exists():
             console.print(f"[red]错误: 路径不存在: {p}[/red]")
