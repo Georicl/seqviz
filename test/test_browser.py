@@ -3,8 +3,6 @@
 import asyncio
 from pathlib import Path
 
-import pytest
-
 from seqviz.browser import FastaBrowser, FileFormat, SequenceInfo, SequenceList
 
 TEST_DIR = Path(__file__).parent

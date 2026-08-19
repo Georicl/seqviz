@@ -7,10 +7,11 @@ packages = ["src/seqviz"]
 
 [project]
 name = "seqviz"
-version = "0.7.0rc1"
+version = "0.7.0rc2"
 description = "A terminal visualizer for biological sequence data — FASTA / FASTQ / VCF"
 readme = "README.md"
-requires-python = ">=3.12"
+license = "MIT"
+requires-python = ">=3.14"
 dependencies = [
     "rich>=15.0.0",
     "textual>=8.2.8",
@@ -28,3 +29,4 @@ dev = [
 
 [tool.ruff.lint.per-file-ignores]
 "src/seqviz/cli.py" = ["B008"]  # Typer 惯用法：typer.Argument/Option 在默认参数中调用
+"test/**" = ["RUF059", "RUF015"]  # 测试中解包未使用变量和切片取首元素是常见模式

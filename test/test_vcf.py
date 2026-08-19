@@ -9,13 +9,13 @@ from seqviz.vcf import (
     classify_variant,
     compute_stats,
     load_variant_detail,
+    parse_coord_query,
     parse_genotype,
     parse_meta,
     parse_variant_line,
     scan_vcf,
     scan_vcf_quick,
     scan_vcf_resume,
-    parse_coord_query,
 )
 
 SAMPLE_VCF = Path(__file__).parent / "sample.vcf"

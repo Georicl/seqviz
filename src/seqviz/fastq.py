@@ -3,7 +3,7 @@ from collections.abc import Generator
 from pathlib import Path
 
 
-def parse_fastq(filepath: str | Path) -> Generator[tuple[str, str, str], None, None]:
+def parse_fastq(filepath: str | Path) -> Generator[tuple[str, str, str]]:
     """
     流式解析 FASTQ 文件。
     逐条 yield (header, sequence, quality)。

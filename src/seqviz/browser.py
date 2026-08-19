@@ -100,7 +100,7 @@ class SequenceInfo:
         self.checkpoints = None     # [(碱基位置, 文件偏移)]，仅非等宽大序列使用
 
 
-def _iter_sequences(filepath: Path, fmt: FileFormat, start_idx: int = 0) -> Generator[SequenceInfo, None, None]:
+def _iter_sequences(filepath: Path, fmt: FileFormat, start_idx: int = 0) -> Generator[SequenceInfo]:
     """通用序列迭代器：二进制模式流式解析 FASTA/FASTQ，yield SequenceInfo。
 
     Args:
@@ -971,7 +971,7 @@ class FastaBrowser(App):
                 self._update_status()
 
     # ── 命令栏（动态挂载/卸载）──
-    def _get_command_bar(self) -> "CommandBar | None":
+    def _get_command_bar(self) -> CommandBar | None:
         bars = self.query("#command-bar")
         return bars.first() if bars else None
 
@@ -1100,7 +1100,7 @@ class FastaBrowser(App):
         else:
             self.notify("剪贴板不可用", title="范围复制", severity="warning")
 
-    def _iter_seq_text(self) -> Generator[str, None, None]:
+    def _iter_seq_text(self) -> Generator[str]:
         """流式生成当前序列的纯文本（FASTA/FASTQ 格式），逐块 yield，内存恒定。
 
         大序列不会一次性拼接整条字符串，导出时边生成边写入。

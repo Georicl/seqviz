@@ -2,8 +2,6 @@
 
 import json
 
-import pytest
-
 from seqviz import config as config_mod
 from seqviz import theme as theme_mod
 

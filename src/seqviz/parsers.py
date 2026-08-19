@@ -3,7 +3,7 @@ from collections.abc import Generator
 from pathlib import Path
 
 
-def parse_fasta(filepath: str | Path) -> Generator[tuple[str, str], None, None]:
+def parse_fasta(filepath: str | Path) -> Generator[tuple[str, str]]:
     """流式打开fasta 文件"""
 
     filepath = Path(filepath)

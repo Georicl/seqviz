@@ -1,23 +1,22 @@
 """核心模块测试：parsers / seq_type / stats / renderer"""
 
 import gzip
-from pathlib import Path
 
 import pytest
 from rich.text import Text
 
-from seqviz.parsers import parse_fasta
 from seqviz.fastq import parse_fastq
+from seqviz.parsers import parse_fasta
+from seqviz.renderer import (
+    DNA_COLORS,
+    colorize_quality,
+    colorize_sequence,
+    position_ruler,
+    quality_bar,
+    quality_stats,
+)
 from seqviz.seq_type import SeqType, detect_seq_type
 from seqviz.stats import calc_sequence_stats
-from seqviz.renderer import (
-    colorize_sequence,
-    colorize_quality,
-    quality_stats,
-    quality_bar,
-    position_ruler,
-    DNA_COLORS,
-)
 
 
 # ──────────────────────────────────────────────

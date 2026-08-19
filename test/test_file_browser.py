@@ -3,15 +3,15 @@
 import asyncio
 from pathlib import Path
 
+from seqviz.browser import FileFormat
 from seqviz.file_browser import (
     FileBrowser,
     FileInfo,
+    detect_file_format,
+    format_size,
     is_sequence_file,
     scan_directory,
-    format_size,
-    detect_file_format,
 )
-from seqviz.browser import FileFormat
 
 TEST_DIR = Path(__file__).parent
 
@@ -213,6 +213,7 @@ class TestFileBrowserInteraction:
 class TestCountSequences:
     def test_count_fasta(self, tmp_path):
         import threading
+
         from seqviz.file_browser import count_sequences
         p = tmp_path / "x.fa"
         p.write_text("".join(f">s{i}\nACGT\n" for i in range(7)))
@@ -228,6 +229,7 @@ class TestCountSequences:
 
     def test_count_gzip(self, tmp_path):
         import gzip
+
         from seqviz.file_browser import count_sequences
         p = tmp_path / "x.fa.gz"
         with gzip.open(p, "wt") as f:
@@ -247,6 +249,7 @@ class TestCountSequences:
     def test_cancel_event_interrupts_large_count(self, tmp_path):
         """取消事件置位后应尽早中断（返回值小于完整计数）。"""
         import threading
+
         from seqviz.file_browser import count_sequences
         p = tmp_path / "big.fa"
         p.write_text("".join(f">s{i}\nA\n" for i in range(20000)))

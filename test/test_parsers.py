@@ -1,7 +1,6 @@
 """seqviz.parsers 模块的测试套件"""
 
 import gzip
-import tempfile
 from pathlib import Path
 
 import pytest

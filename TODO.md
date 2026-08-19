@@ -3,7 +3,9 @@
 
 > 生物序列数据终端可视化工具 —— 做序列界的 `bat`
 >
-> 原名 `fasta-fmt`，已更名为 `seqviz`（涵盖 FASTA/FASTQ/VCF 等序列数据可视化）。以下为初始规划文档，包名/命令请以 `seqviz` 为准。
+> 原名 `fasta-fmt`，已更名为 `seqviz`（涵盖 FASTA/FASTQ/VCF 等序列数据可视化）。
+
+**当前版本**: v0.7.0rc2
 
 ---
 
@@ -12,34 +14,36 @@
 ```
 fasta-fmt/
 ├── src/
-│   └── fasta_fmt/
-│       ├── __init__.py
+│   └── seqviz/
+│       ├── __init__.py         # 包入口
 │       ├── cli.py              # CLI 入口 (Typer)
-│       ├── parsers/            # 格式解析器
-│       │   ├── __init__.py
-│       │   ├── base.py         # 解析器基类
-│       │   ├── fasta.py        # FASTA 解析
-│       │   ├── fastq.py        # FASTQ 解析
-│       │   ├── gff.py          # GFF/GFF3 解析
-│       │   └── bed.py          # BED 解析
-│       ├── renderers/          # 渲染引擎
-│       │   ├── __init__.py
-│       │   ├── sequence.py     # 序列着色渲染
-│       │   ├── quality.py      # 质量值可视化
-│       │   └── table.py        # 表格/统计渲染
-│       ├── stats/              # 统计计算
-│       │   ├── __init__.py
-│       │   └── calculator.py   # N50, GC%, 长度分布等
-│       ├── filters/            # 序列筛选
-│       │   ├── __init__.py
-│       │   └── sequence.py     # 按长度/GC/名称筛选
-│       └── themes/             # 配色主题
-│           ├── __init__.py
-│           └── default.py      # 默认碱基配色
-├── tests/
+│       ├── parsers.py          # FASTA 解析器
+│       ├── fastq.py            # FASTQ 解析器
+│       ├── vcf.py              # VCF 解析器
+│       ├── renderer.py         # 序列着色渲染
+│       ├── seq_type.py         # 序列类型检测 (DNA/Protein)
+│       ├── stats.py            # 统计计算 (N50, GC%, 长度分布)
+│       ├── browser.py          # TUI 交互式浏览器 (Textual)
+│       ├── vcf_browser.py      # VCF TUI 浏览器 (双栏布局)
+│       ├── file_browser.py     # 目录文件选择器
+│       ├── clipboard.py        # 剪贴板操作 (分层回退)
+│       ├── config.py           # JSON 配置系统
+│       └── theme.py            # 主题系统 (8 套内置主题)
+├── test/
+│   ├── conftest.py             # 动态 fixture + 配置隔离
+│   ├── test_browser.py
+│   ├── test_cli.py
+│   ├── test_config_theme.py
+│   ├── test_core.py
+│   ├── test_file_browser.py
 │   ├── test_parsers.py
-│   ├── test_renderers.py
-│   └── test_stats.py
+│   ├── test_performance.py
+│   ├── test_regressions.py
+│   ├── test_vcf.py
+│   └── test_vcf_browser.py
+├── config/
+│   ├── config.json             # 默认配置模板
+│   └── theme.json              # 主题配置模板
 ├── pyproject.toml
 ├── README.md
 └── TODO.md
@@ -47,81 +51,125 @@ fasta-fmt/
 
 ---
 
-## 开发阶段
+## 已完成功能
 
-### Phase 1: MVP (第1周)
+### Phase 1: MVP ✅
 
-- [ ] **1.1 项目基础配置**
-  - [ ] 配置 pyproject.toml (依赖: rich, typer)
-  - [ ] 配置 uv 开发环境
-  - [ ] 设置 CLI 入口点 `fasta-fmt`
+- [x] **1.1 项目基础配置**
+  - [x] 配置 pyproject.toml (依赖: rich, textual, typer)
+  - [x] 配置 uv 开发环境
+  - [x] 设置 CLI 入口点 `seqviz`
 
-- [ ] **1.2 FASTA 解析器**
-  - [ ] 实现流式 FASTA 解析 (支持大文件, 不全部加载)
-  - [ ] 支持 gzip 压缩文件 (.fa.gz)
-  - [ ] 解析 header (ID, description)
-  - [ ] 解析 sequence
+- [x] **1.2 FASTA 解析器**
+  - [x] 实现流式 FASTA 解析 (支持大文件, 分块加载)
+  - [x] 解析 header (ID, description)
+  - [x] 解析 sequence
+  - [x] 支持 gzip 压缩文件 (.fa.gz)
+  - [x] 大文件 seek 定位 + 虚拟列表
 
-- [ ] **1.3 序列着色渲染**
-  - [ ] DNA 碱基着色: A(绿) T(红) C(蓝) G(黄)
-  - [ ] 蛋白质氨基酸着色 (按化学性质分组)
-  - [ ] 使用 Rich 库实现终端彩色输出
-  - [ ] 支持管道输出 (检测是否为 TTY)
+- [x] **1.3 序列着色渲染**
+  - [x] DNA 碱基着色: A(绿) T(红) C(蓝) G(黄)
+  - [x] 蛋白质氨基酸着色 (按化学性质分组)
+  - [x] 使用 Rich 库实现终端彩色输出
+  - [x] 支持管道输出 (检测是否为 TTY)
+  - [x] 序列类型自动检测 (DNA/Protein)
 
-- [ ] **1.4 基础 CLI 命令**
-  - [ ] `fasta-fmt view <file>` - 美化查看
-  - [ ] `fasta-fmt stats <file>` - 统计摘要
-  - [ ] `fasta-fmt head <file> -n 10` - 查看前N条序列
+- [x] **1.4 基础 CLI 命令**
+  - [x] `seqviz view <file>` - 美化查看
+  - [x] `seqviz stats <file>` - 统计摘要
+  - [x] `seqviz head <file> -n 10` - 查看前N条序列
 
-### Phase 2: 核心功能 (第2周)
+### Phase 2: 核心功能 ✅
 
-- [ ] **2.1 FASTQ 支持**
-  - [ ] FASTQ 格式解析
-  - [ ] 质量值着色 (Phred score 梯度色)
-  - [ ] 质量值分布图 (终端内 ASCII 图)
+- [x] **2.1 FASTQ 支持**
+  - [x] FASTQ 格式解析
+  - [x] 质量值着色 (Phred score 梯度色)
+  - [x] `seqviz fqview` 命令 (序列 + 质量值对齐着色)
 
-- [ ] **2.2 统计功能增强**
-  - [ ] N50 / N90 / L50 计算
-  - [ ] GC 含量统计
-  - [ ] 序列长度分布 (min/max/mean/median)
-  - [ ] 多文件批量统计
-  - [ ] 表格化输出 (Rich Table)
+- [x] **2.2 统计功能增强**
+  - [x] N50 / N90 / L50 计算
+  - [x] GC 含量统计
+  - [x] 序列长度分布 (min/max/mean/median)
+  - [x] 表格化输出 (Rich Table)
 
-- [ ] **2.3 序列筛选**
-  - [ ] `--min-len` / `--max-len` 按长度筛选
-  - [ ] `--min-gc` / `--max-gc` 按 GC 含量筛选
-  - [ ] `--grep` 按名称/描述模糊搜索
-  - [ ] `--regex` 按序列 motif 正则筛选
+- [ ] **2.3 序列筛选** (未实现，已移入下方待办)
 
-### Phase 3: 进阶功能 (第3-4周)
+### Phase 3: 进阶功能 ✅ (大幅超越原规划)
 
-- [ ] **3.1 多格式支持**
-  - [ ] GFF/GFF3 解析与美化
-  - [ ] BED 格式支持
-  - [ ] 格式互转: `fasta-fmt convert input.gff --to bed`
+- [x] **3.1 VCF 格式支持** (原规划为 GFF/BED，实际实现 VCF)
+  - [x] VCF 懒扫描解析 (30 万变异 ~1s)
+  - [x] 变异分类与着色 (SNP/Insertion/Deletion)
+  - [x] 双栏 TUI 布局 (变异列表 + 基因型矩阵)
+  - [x] 过滤/排序/搜索
+  - [x] 后台续扫 + GIL 让出优化
 
-- [ ] **3.2 交互式浏览 (可选)**
-  - [ ] 大文件索引 (记录每条序列的偏移量)
-  - [ ] 交互式翻页浏览
-  - [ ] 序列搜索跳转
+- [x] **3.2 交互式 TUI 浏览器** (Textual 框架)
+  - [x] 大文件分块加载 (二进制快路径 + checkpoint 索引)
+  - [x] 交互式翻页浏览 (j/k/Space/PageUp/PageDown)
+  - [x] 序列搜索跳转 (/ 搜索, n 下一个)
+  - [x] 位置跳转 (g 跳转输入)
+  - [x] 序列范围复制 (y 键, 支持 100-200 格式)
+  - [x] 帮助面板 (? 键)
+  - [x] 多文件标签切换 (Tab)
+  - [x] 侧栏序列信息面板
 
-- [ ] **3.3 输出增强**
-  - [ ] `--format markdown` 输出 Markdown 表格
-  - [ ] `--format html` 生成 HTML 报告
-  - [ ] `--no-color` 纯文本输出 (管道友好)
-  - [ ] `--wrap N` 序列换行宽度
+- [x] **3.3 目录文件浏览器**
+  - [x] 目录浏览与文件选择
+  - [x] 文件格式标记 ([F] FASTA, [Q] FASTQ, [V] VCF)
+  - [x] 序列数/变异数预览
 
-### Phase 4: 发布 (第4周)
+- [x] **3.4 JSON 配置系统**
+  - [x] 用户级配置 (~/.config/seqviz/config.json)
+  - [x] 8 套内置主题
+  - [x] 可配置交互参数 (wrap_width, scroll_step 等)
+  - [x] `seqviz config` 命令 (查看/初始化配置)
 
-- [ ] **4.1 文档与测试**
-  - [ ] 完善 README (含 GIF 演示)
-  - [ ] 单元测试覆盖率 > 80%
-  - [ ] 添加示例数据
+### Phase 4: 发布 (部分完成)
 
-- [ ] **4.2 发布配置**
-  - [ ] PyPI 发布配置
-  - [ ] GitHub Actions CI
-  - [ ] LICENSE (MIT)
+- [x] **4.1 文档与测试**
+  - [x] README 文档
+  - [x] 单元测试 333 项全部通过
+  - [x] 性能测试与回归测试
+  - [x] 单元测试覆盖率 > 80% (CI 门禁 85%)
+  - [ ] GIF 演示
+
+- [x] **4.2 发布配置**
+  - [x] PyPI 发布配置 (hatchling)
+  - [x] GitHub Actions CI
+  - [x] LICENSE
+
+---
+
+## 待办 / 未来规划
+
+### 高优先级
+
+- [x] 添加 GitHub Actions CI (自动测试 + ruff lint)
+- [x] 添加 LICENSE 文件 (MIT)
+- [ ] browser.py 拆分重构 (当前 1220 行 God Object)
+  - [ ] 提取 sequence_view.py (分块引擎 + SequenceView)
+  - [ ] 提取 components.py (共享 UI 组件)
+  - [ ] 提取 app.py (控制器)
+- [ ] 统一 VCF 检测逻辑 (消除 cli.py / file_browser.py / browser.py 三处平行判断)
+
+### 中优先级
+
+- [ ] _load_chunk 添加 LRU 缓存 (减少 HDD 上的 seek+read 次数)
+- [ ] compute_stats 改为接受 Iterable (消除中间列表分配)
+- [ ] vcf_browser.py 硬编码常量可配置化 (WINDOW=400)
+- [x] 剪贴板逻辑去重 (已提取为 clipboard.py 共享模块)
+
+### 低优先级 / 可选
+
+- [ ] GFF/GFF3 格式支持
+- [ ] BED 格式支持
+- [ ] 格式互转命令
+- [ ] `--format markdown` / `--format html` 输出
+- [ ] `--no-color` 纯文本输出
+- [ ] `--min-len` / `--max-len` 按长度筛选
+- [ ] `--grep` 按名称/描述模糊搜索
+- [ ] `--min-gc` / `--max-gc` 按 GC 含量筛选
+- [ ] `--regex` 按序列 motif 正则筛选
 
 ---
 
@@ -130,85 +178,52 @@ fasta-fmt/
 | 组件 | 选择 | 用途 |
 |------|------|------|
 | CLI 框架 | Typer | 命令行参数解析 |
+| TUI 框架 | Textual | 交互式终端浏览器 |
 | 终端渲染 | Rich | 彩色输出、表格、面板 |
 | 包管理 | uv | 依赖管理 |
-| 测试 | pytest | 单元测试 |
+| 构建 | hatchling | wheel/sdist 构建 |
+| 测试 | pytest + pytest-cov | 单元测试 + 覆盖率 |
+| Lint | ruff | 代码检查与格式化 |
 | Python | >= 3.14 | 运行时 |
 
 ---
 
-## CLI 命令设计
+## CLI 命令
 
 ```bash
-# 查看序列 (碱基着色)
-fasta-fmt view genome.fasta
-fasta-fmt view reads.fastq --quality    # 显示质量值着色
+# 交互式浏览器 (主功能，直接跟路径)
+seqviz genome.fasta          # 打开单文件浏览器
+seqviz data/                 # 目录文件选择器
+seqviz                       # 当前目录浏览器
 
-# 统计信息
-fasta-fmt stats genome.fasta
-fasta-fmt stats *.fasta --format table  # 多文件表格对比
-
-# 查看前N条
-fasta-fmt head genome.fasta -n 5
-
-# 筛选
-fasta-fmt view genome.fasta --min-len 1000 --max-len 50000
-fasta-fmt view genome.fasta --grep "mitochondria"
-fasta-fmt view genome.fasta --min-gc 0.4
-
-# 格式转换
-fasta-fmt convert annotation.gff3 --to bed
-fasta-fmt convert genes.fasta --to fastq --dummy-quality 30
-
-# 序列提取
-fasta-fmt extract genome.fasta --id "chr1" --start 1000 --end 2000
+# 辅助命令
+seqviz view genome.fasta     # 美化查看 (Rich 输出)
+seqviz stats genome.fasta    # 统计摘要
+seqviz head genome.fasta -n 5  # 查看前 N 条
+seqviz fqview reads.fastq    # FASTQ 质量值着色
+seqviz config                # 查看配置
+seqviz config --init         # 生成配置模板
 ```
 
 ---
 
-## 碱基配色方案
+## 性能指标 (已达成)
 
-```
-DNA:
-  A (Adenine)  → 绿色 (green)
-  T (Thymine)  → 红色 (red)
-  C (Cytosine) → 蓝色 (blue)
-  G (Guanine)  → 黄色 (yellow)
-  N (Unknown)  → 灰色 (dim)
-
-Protein (按化学性质):
-  疏水性 (AVILMFYW) → 绿色系
-  亲水性 (STNQ)     → 蓝色系
-  碱性 (RKH)        → 红色系
-  酸性 (DE)         → 紫色系
-  特殊 (GPC)        → 灰色系
-
-Quality (Phred):
-  Q >= 30  → 绿色 (高质量)
-  Q >= 20  → 黄色 (中等)
-  Q >= 10  → 橙色 (低)
-  Q < 10   → 红色 (极低)
-```
-
----
-
-## 性能目标
-
-- 1GB FASTA 文件: `view` 首屏输出 < 100ms (流式)
-- 100MB FASTQ 文件: `stats` 完成 < 5s
-- 内存占用: 不超过文件大小 (流式处理)
+- 50k 序列文件扫描: 36ms
+- 2M bp 超长序列加载: 10ms
+- 滚动渲染: 5.6ms/次
+- 30 万 VCF 变异扫描: ~1s
+- VCF 过滤切换: ~600ms (窗口化虚拟化)
 
 ---
 
 ## 里程碑
 
-| 版本 | 内容 | 预计时间 |
-|------|------|----------|
-| v0.1.0 | MVP: view + stats + 碱基着色 | 第1周 |
-| v0.2.0 | FASTQ + 筛选 + 多文件统计 | 第2周 |
-| v0.3.0 | 多格式 + 转换 + HTML报告 | 第3-4周 |
-| v1.0.0 | 稳定版 + 完整文档 + PyPI | 第4周 |
-```
-
----
-
+| 版本 | 内容 | 状态 |
+|------|------|------|
+| v0.1.0 | MVP: view + stats + 碱基着色 | ✅ 已发布 |
+| v0.2.0 | FASTQ + 筛选 | ✅ 已发布 |
+| v0.3.0 | JSON 配置 + 性能优化 | ✅ 已发布 |
+| v0.5.0 | TUI 浏览器 + 文件选择器 | ✅ 已发布 |
+| v0.7.0 | VCF 可视化 + 双栏布局 | 🔄 rc2 |
+| v1.0.0 | 稳定版 + CI + 完整文档 | 📋 规划中 |

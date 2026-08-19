@@ -8,6 +8,6 @@ from importlib.metadata import PackageNotFoundError, version
 try:
     __version__ = version("seqviz")
 except PackageNotFoundError:  # 源码树直接运行时（未安装）回退
-    __version__ = "0.7.0rc1"
+    __version__ = "0.7.0rc2"
 
 __all__ = ["__version__"]
