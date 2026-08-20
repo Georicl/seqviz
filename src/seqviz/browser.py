@@ -154,8 +154,9 @@ class SequenceList(OptionList):
 
     def __init__(self, sequences: list[SequenceInfo], **kwargs):
         super().__init__(**kwargs)
-        for seq in sequences:
-            self.add_option(Option(self._make_label(seq), id=f"seq-{seq.index}"))
+        self.add_options(
+            [Option(self._make_label(seq), id=f"seq-{seq.index}") for seq in sequences]
+        )
 
     @staticmethod
     def _make_label(seq: SequenceInfo) -> str:
@@ -171,12 +172,14 @@ class SequenceList(OptionList):
         return f" {label}  {size_str}bp"
 
     def append_sequences(self, new_seqs: list[SequenceInfo]):
-        """为新扫描到的序列追加 Option（后台扫描用）。
+        """为新扫描到的序列批量追加 Option（后台扫描用）。
 
-        只加 Option，不追加数据 list——数据由 FileTab.sequences 统一持有。
+        使用 add_options() 批量添加，避免逐个 add_option 每次标脏 OptionList
+        造成的重绘开销。只加 Option，不追加数据 list——数据由 FileTab.sequences 统一持有。
         """
-        for seq in new_seqs:
-            self.add_option(Option(self._make_label(seq), id=f"seq-{seq.index}"))
+        self.add_options(
+            [Option(self._make_label(s), id=f"seq-{s.index}") for s in new_seqs]
+        )
 
 
 class SequenceView(Static):
@@ -228,6 +231,14 @@ class SequenceView(Static):
         if self._fh and not self._fh.closed:
             self._fh.close()
             self._fh = None
+
+    def on_unmount(self):
+        """组件卸载时关闭自身持久文件句柄，避免文件描述符泄露。
+
+        Textual 先卸载子组件再触发 App 的 on_unmount，
+        因此句柄关闭必须挂在组件自身的 on_unmount 上。
+        """
+        self.close()
 
     def load_sequence(self, seq_info: SequenceInfo):
         """用 offset 直接 seek 到目标位置。大序列分块加载。
@@ -810,17 +821,12 @@ class FastaBrowser(App):
             self.run_worker(self._background_scan, thread=True, exclusive=False)
 
     def on_unmount(self):
-        """应用退出时置取消标志并关闭所有持久文件句柄，避免文件描述符泄露。
+        """应用退出时置取消标志，后台扫描线程在每批之间检查后尽早退出。
 
-        后台扫描线程在每批之间检查取消标志后尽早退出，
-        避免退出后继续占用 CPU/IO 或向已关闭的事件循环投递更新。
+        文件句柄关闭已移至 SequenceView.on_unmount()（Textual 先卸载子组件，
+        App 级 on_unmount 中 query(SequenceView) 返回空集）。
         """
         self._scan_cancelled = True
-        try:
-            for view in self.query(SequenceView):
-                view.close()
-        except Exception:  # noqa: BLE001, S110
-            pass  # 应用启动期异常时 screen 栈可能不存在，避免掩盖真实错误
 
     def _background_scan(self):
         """后台扫描剩余序列（在独立线程中运行，避免阻塞 Textual 事件循环）。
