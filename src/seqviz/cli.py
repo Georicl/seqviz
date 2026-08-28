@@ -110,7 +110,11 @@ def _run_vcf_browser(path: Path):
     from seqviz.vcf import scan_vcf_quick
     from seqviz.vcf_browser import VcfBrowser
     QUICK_LIMIT = 5000
-    meta, variants, skipped, cont = scan_vcf_quick(path, limit=QUICK_LIMIT)
+    try:
+        meta, variants, skipped, cont = scan_vcf_quick(path, limit=QUICK_LIMIT)
+    except OSError as exc:
+        console.print(f"[red]错误: 无法读取文件 {path}: {exc}[/red]")
+        raise typer.Exit(code=1)
     if not meta.has_header:
         console.print(f"[red]错误: 不是有效的 VCF 文件（缺少 #CHROM 表头）: {path}[/red]")
         raise typer.Exit(code=1)

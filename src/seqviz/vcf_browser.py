@@ -333,7 +333,15 @@ class VcfBrowser(App):
         try:
             new_all, skipped_add = scan_vcf_resume(
                 self.filepath, self._cont_offset, on_batch=_dispatch)
-        except Exception:  # noqa: BLE001
+        except StopIteration:
+            return  # 应用已关闭，正常退出
+        except Exception as exc:  # noqa: BLE001
+            # 通知用户扫描失败，而非静默吞掉异常
+            try:
+                self.call_from_thread(
+                    self.notify, f"后台扫描失败: {exc}", title="VCF", severity="error")
+            except RuntimeError:
+                pass  # 应用已退出
             return
         try:
             self.call_from_thread(self._finish_scan, new_all, skipped_add)
@@ -467,6 +475,8 @@ class VcfBrowser(App):
         if not self.scanning:
             return
         self._extend_and_sync(batch)
+        self._types = None  # 缓存失效：新变异追加后类型列表长度不匹配
+        self._qual_order = None  # 缓存失效：QUAL 排序索引不包含新变异
         self._update_status_bar()
         self._sync_position_indicator()
 
@@ -477,6 +487,8 @@ class VcfBrowser(App):
         appended = len(self.variants) - self._initial_count
         if appended < len(new_all):
             self._extend_and_sync(new_all[appended:])
+        self._types = None  # 缓存失效：扫描完成后类型列表可能不完整
+        self._qual_order = None  # 缓存失效：QUAL 排序索引可能不完整
         if self._view_dirty or self._order_dirty:
             self._apply_filter_sort()
         else:
