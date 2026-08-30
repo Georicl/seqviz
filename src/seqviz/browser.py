@@ -155,7 +155,9 @@ class SequenceList(OptionList):
 
     def __init__(self, sequences: list[SequenceInfo], **kwargs):
         super().__init__(**kwargs)
-        self.add_options([Option(self._make_label(seq), id=f"seq-{seq.index}") for seq in sequences])
+        self.add_options(
+            [Option(self._make_label(seq), id=f"seq-{seq.index}") for seq in sequences]
+        )
 
     @staticmethod
     def _make_label(seq: SequenceInfo) -> str:
@@ -171,13 +173,14 @@ class SequenceList(OptionList):
         return f" {label}  {size_str}bp"
 
     def append_sequences(self, new_seqs: list[SequenceInfo]):
-        """为新扫描到的序列追加 Option（后台扫描用）。
+        """为新扫描到的序列批量追加 Option（后台扫描用）。
 
-        只加 Option，不追加数据 list——数据由 FileTab.sequences 统一持有。
-        批量 add_options：逐个 add_option 每次都标脏挂载中的 OptionList 触发重排重绘，
-        400K reads 下索引耗时从 ~70s 退化；一次批量添加可提速数倍（issue #4 复核验证）。
+        使用 add_options() 批量添加，避免逐个 add_option 每次标脏 OptionList
+        造成的重绘开销。只加 Option，不追加数据 list——数据由 FileTab.sequences 统一持有。
         """
-        self.add_options([Option(self._make_label(seq), id=f"seq-{seq.index}") for seq in new_seqs])
+        self.add_options(
+            [Option(self._make_label(s), id=f"seq-{s.index}") for s in new_seqs]
+        )
 
 
 class SequenceView(Static):
@@ -231,8 +234,11 @@ class SequenceView(Static):
             self._fh = None
 
     def on_unmount(self):
-        """组件自身卸载时关闭持久句柄（issue #4：Textual 先卸载子组件再触发 App 的
-        on_unmount，App 级 query(SequenceView) 此时已返回空集，钩子必须挂在组件自身）。"""
+        """组件卸载时关闭自身持久文件句柄，避免文件描述符泄露。
+
+        Textual 先卸载子组件再触发 App 的 on_unmount，
+        因此句柄关闭必须挂在组件自身的 on_unmount 上。
+        """
         self.close()
 
     def load_sequence(self, seq_info: SequenceInfo):
@@ -816,10 +822,10 @@ class FastaBrowser(App):
             self.run_worker(self._background_scan, thread=True, exclusive=False)
 
     def on_unmount(self):
-        """应用退出时置取消标志，通知后台扫描线程尽早退出。
+        """应用退出时置取消标志，后台扫描线程在每批之间检查后尽早退出。
 
-        文件句柄关闭由 SequenceView.on_unmount 在组件自身卸载时完成
-        （App 级钩子触发时子组件已卸载，query 拿不到 view）。
+        文件句柄关闭已移至 SequenceView.on_unmount()（Textual 先卸载子组件，
+        App 级 on_unmount 中 query(SequenceView) 返回空集）。
         """
         self._scan_cancelled = True
 
