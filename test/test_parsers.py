@@ -1,7 +1,6 @@
 """seqviz.parsers 模块的测试套件"""
 
 import gzip
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -120,6 +119,14 @@ class TestParseFastaEdgeCases:
         records = list(parse_fasta(f))
         assert records[0][0] == "sp|P12345|PROTEIN_OS Human gene=XXX"
 
+    def test_header_trailing_whitespace_stripped(self, tmp_path: Path):
+        """header 首尾空白应去除，与 browser 索引解析保持一致。"""
+        f = tmp_path / "ws.fa"
+        f.write_text(">seq1 description \nACGT\n> seq2\t\nGGCC\n")
+        records = list(parse_fasta(f))
+        assert records[0][0] == "seq1 description"
+        assert records[1][0] == "seq2"
+
     def test_no_trailing_newline(self, tmp_path: Path):
         """文件末尾无换行符"""
         f = tmp_path / "nonl.fa"
@@ -200,3 +207,27 @@ class TestParseEncodingAndMalformed:
         f.write_bytes(b"@caf\xe9\nACGT\n+\nIIII\n")
         records = list(parse_fastq(f))
         assert len(records) == 1
+
+    def test_fastq_truncated_record_raises(self, tmp_path: Path):
+        """记录在质量行处截断：应报错而非静默产出空质量的幻影记录。"""
+        from seqviz.fastq import parse_fastq
+        f = tmp_path / "trunc1.fastq"
+        f.write_text("@r1\nACGT\n+\n")  # 缺质量行
+        with pytest.raises(ValueError, match="质量行"):
+            list(parse_fastq(f))
+        f2 = tmp_path / "trunc2.fastq"
+        f2.write_text("@r2\nACGT")  # 缺 + 与质量行
+        with pytest.raises(ValueError):
+            list(parse_fastq(f2))
+        f3 = tmp_path / "trunc3.fastq"
+        f3.write_text("@r3\n")  # 只有 header
+        with pytest.raises(ValueError, match="序列行"):
+            list(parse_fastq(f3))
+
+    def test_fastq_multiline_sequence_clear_error(self, tmp_path: Path):
+        """序列跨行（多行序列）应提示 '+' 分隔符错误而非误导性的 '@' 错误。"""
+        from seqviz.fastq import parse_fastq
+        f = tmp_path / "multi.fastq"
+        f.write_text("@r1\nACGT\nACGT\n+\nIIIIIIII\n")
+        with pytest.raises(ValueError, match=r"\+"):
+            list(parse_fastq(f))

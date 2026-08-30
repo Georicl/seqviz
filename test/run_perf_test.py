@@ -1,14 +1,14 @@
 """Comprehensive performance test for seqviz with large files."""
+import gzip
 import os
 import sys
-import time
-import gzip
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from seqviz.browser import FastaBrowser, FileFormat, SequenceView, _open_seq_file
+from seqviz.browser import FastaBrowser, FileFormat, SequenceView
 
 DATA_DIR = "/tmp/seqviz_perf_test"
 GENOME = Path(DATA_DIR) / "genome_5g.fa"

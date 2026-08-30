@@ -3,7 +3,7 @@ from collections.abc import Generator
 from pathlib import Path
 
 
-def parse_fasta(filepath: str | Path) -> Generator[tuple[str, str], None, None]:
+def parse_fasta(filepath: str | Path) -> Generator[tuple[str, str]]:
     """流式打开fasta 文件"""
 
     filepath = Path(filepath)
@@ -23,7 +23,7 @@ def parse_fasta(filepath: str | Path) -> Generator[tuple[str, str], None, None]:
                 if header is not None:
                     yield header, "".join(seq_parts)
 
-                header = line[1:]  # 去掉 > 符号
+                header = line[1:].strip()  # 去掉 > 符号并去除首尾空白（与 browser 索引一致）
                 seq_parts = []
 
             else:

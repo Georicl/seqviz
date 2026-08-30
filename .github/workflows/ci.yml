@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main, vcf]
+  pull_request:
+    branches: [main, vcf]
+
+jobs:
+  lint:
+    name: Ruff Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Run ruff check
+        run: uvx ruff@0.16.3 check src/ test/
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Run tests with coverage
+        run: uv run pytest test/ -x -q --tb=short --cov=seqviz --cov-report=term-missing --cov-fail-under=85

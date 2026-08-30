@@ -3,12 +3,13 @@ from pathlib import Path
 import typer
 from rich.console import Console
 from rich.table import Table
+from typer.core import TyperGroup
 
 from seqviz import config as config_mod
 from seqviz import theme as theme_mod
 from seqviz.browser import FastaBrowser
 from seqviz.fastq import parse_fastq
-from seqviz.file_browser import run_file_browser, scan_directory
+from seqviz.file_browser import is_vcf_file, run_file_browser, scan_directory
 from seqviz.parsers import parse_fasta
 from seqviz.renderer import (
     colorize_quality,
@@ -18,25 +19,122 @@ from seqviz.renderer import (
     quality_stats,
 )
 from seqviz.seq_type import SeqType, detect_seq_type
-from seqviz.stats import calc_sequence_stats
+from seqviz.stats import calc_n50, calc_sequence_stats
 
-app = typer.Typer()
+
+class _DefaultBrowseGroup(TyperGroup):
+    """浏览是主功能：首个参数不是已知子命令时，默认路由到 browse。
+
+    seqviz test.fa      ≡ seqviz browse test.fa
+    seqviz view test.fa → 子命令 view 不变
+    """
+
+    def parse_args(self, ctx, args):
+        if args and not args[0].startswith("-") and args[0] not in self.commands:
+            args = ["browse", *args]
+        return super().parse_args(ctx, args)
+
+
+app = typer.Typer(cls=_DefaultBrowseGroup)
 console = Console()
+
+# 明确不支持的文件类型（避免按 FASTA 静默解析产生空界面）
+_UNSUPPORTED_EXTS = {".bam", ".bcf", ".cram", ".sam"}
 
 
 def _check_file(file: Path) -> Path:
-    """检查文件存在，不存在则友好报错退出。"""
+    """检查文件存在且非目录，否则友好报错退出。
+
+    不拒绝非常规文件：/dev/stdin、命名管道等 Unix 惯用输入仍可正常使用，
+    真实读取错误由 open 层的友好报错兜底。
+    """
     if not file.exists():
         console.print(f"[red]错误: 文件不存在: {file}[/red]")
         raise typer.Exit(code=1)
+    if file.is_dir():
+        console.print(f"[red]错误: 不是文件（是目录）: {file}[/red]")
+        raise typer.Exit(code=1)
     return file
+
+
+def _read_error_exit(e: OSError) -> None:
+    """读取文件失败（权限/IO 等）时友好报错，而非裸 traceback。"""
+    console.print(f"[red]错误: 无法读取文件: {e}[/red]")
+    raise typer.Exit(code=1) from None
+
+
+# 兼容旧名称：统一复用 file_browser.is_vcf_file 的单一实现，避免两套判定分歧
+_is_vcf = is_vcf_file
+
+
+def _reject_unsupported(path: Path) -> None:
+    """对明确不支持的文件类型友好报错，避免静默按 FASTA 解析产生空界面。"""
+    if not path.is_file():
+        return
+    suffix = path.suffix.lower()
+    if suffix == ".gz":
+        inner = Path(path.stem).suffix.lower()
+        if inner == ".vcf":
+            console.print(f"[red]错误: 暂不支持压缩 VCF 文件: {path}[/red]（请先解压为 .vcf）")
+            raise typer.Exit(code=1)
+        suffix = inner
+    if suffix in _UNSUPPORTED_EXTS:
+        console.print(f"[red]错误: 暂不支持的文件类型: {path}[/red]")
+        raise typer.Exit(code=1)
+
+
+def _print_fasta_record(header: str, seq: str, wrap: int) -> None:
+    """打印一条 FASTA 记录：header + 类型标签 + 位置标尺 + 分块着色序列。"""
+    seqtype = detect_seq_type(seq)
+    type_label = "DNA" if seqtype == SeqType.DNA else "Protein" if seqtype == SeqType.PROTEIN else "Unknown"
+
+    console.print(
+        f"[bold cyan]> {header}[/bold cyan] "
+        f"[dim]\\[{type_label}] {len(seq)}bp[/dim]"
+    )
+    # 按 wrap 宽度切分，逐行着色并输出（避免整条 Rich Text 的 span explosion）
+    for chunk_start in range(0, len(seq), wrap):
+        chunk_end = min(chunk_start + wrap, len(seq))
+        ruler = position_ruler(chunk_start + 1, chunk_end - chunk_start)
+        console.print("  ", end="")
+        console.print(ruler)
+        console.print("  ", end="")
+        console.print(colorize_sequence(seq[chunk_start:chunk_end], seq_type=seqtype))
+
+
+def _run_vcf_browser(path: Path):
+    """快扫前 5000 条做校验后立即启动 TUI，剩余索引由浏览器后台续扫（启动即显）。
+
+    空文件/无 #CHROM 表头时友好报错非零退出。
+    """
+    from seqviz.vcf import scan_vcf_quick
+    from seqviz.vcf_browser import VcfBrowser
+    QUICK_LIMIT = 5000
+    try:
+        meta, variants, skipped, cont = scan_vcf_quick(path, limit=QUICK_LIMIT)
+    except OSError as exc:
+        console.print(f"[red]错误: 无法读取文件 {path}: {exc}[/red]")
+        raise typer.Exit(code=1)
+    if not meta.has_header:
+        console.print(f"[red]错误: 不是有效的 VCF 文件（缺少 #CHROM 表头）: {path}[/red]")
+        raise typer.Exit(code=1)
+    if not variants:
+        console.print(f"[red]错误: VCF 文件中没有变异记录: {path}[/red]")
+        raise typer.Exit(code=1)
+    VcfBrowser(path, initial=(meta, variants, skipped, cont)).run()
 
 
 def _launch_browser(paths: list[Path]):
     """根据路径启动浏览器：目录走文件选择器，文件直接打开。
 
     支持从序列浏览器按 B 返回文件选择器（循环）。
+    单个 .vcf 文件路由到 VcfBrowser。
     """
+    # 单文件且为 .vcf → VCF 变异浏览器
+    if len(paths) == 1 and _is_vcf(paths[0]):
+        _run_vcf_browser(paths[0])
+        return
+
     source_dir: Path | None = None
 
     # 单个目录 → 记住来源目录，走文件选择器流程
@@ -67,17 +165,53 @@ def _launch_browser(paths: list[Path]):
             console.print("[red]没有找到可打开的序列文件[/red]")
             raise typer.Exit()
 
+        # 选中结果若为单个 .vcf → 路由到 VcfBrowser
+        if len(open_paths) == 1 and _is_vcf(open_paths[0]):
+            _run_vcf_browser(open_paths[0])
+            break
+
+        # VCF 暂不支持与序列文件混合打开：剥离并提示，避免在 FastaBrowser 中产生静默空标签页
+        mixed_vcfs = [p for p in open_paths if _is_vcf(p)]
+        if mixed_vcfs and len(open_paths) > 1:
+            console.print("[yellow]VCF 文件暂不支持与其他文件混合打开，已跳过: "
+                          + ", ".join(p.name for p in mixed_vcfs) + "[/yellow]")
+            open_paths = [p for p in open_paths if not _is_vcf(p)]
+            if not open_paths:
+                if source_dir is not None:
+                    continue  # 回到文件选择器重新选择
+                raise typer.Exit()
+
         # 运行序列浏览器；按 B 返回 "back" 则重新进入文件选择器
         result = FastaBrowser(open_paths, source_dir=source_dir).run()
         if result != "back":
             break
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        from seqviz import __version__
+        console.print(f"seqviz {__version__}")
+        raise typer.Exit()
+
+
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context):
+def main(
+    ctx: typer.Context,
+    version: bool = typer.Option(
+        False, "--version", "-V", help="显示版本号",
+        callback=_version_callback, is_eager=True,
+    ),
+):
     """seqviz — 生物序列数据终端可视化工具。
 
-    不带任何命令时，默认打开当前目录的文件浏览器。
+    直接跟文件/目录路径即可打开交互式浏览器（主功能）：
+
+        seqviz reads.fastq      打开单个文件
+
+        seqviz data/            目录文件选择器
+
+    不带任何参数时，默认打开当前目录的文件浏览器。
+    其余子命令（view/stats/head/fqview/config）为辅助功能。
     """
     if ctx.invoked_subcommand is None:
         _launch_browser([Path(".")])
@@ -90,26 +224,12 @@ def view(
 ):
     """美化查看 FASTA 文件"""
     _check_file(file)
-    for header, seq in parse_fasta(str(file)):
-        seqtype = detect_seq_type(seq)
-        type_label = "DNA" if seqtype == SeqType.DNA else "Protein" if seqtype == SeqType.PROTEIN else "Unknown"
-
-        # header + 类型标签 + 长度
-        console.print(
-            f"[bold cyan]> {header}[/bold cyan] "
-            f"[dim]\\[{type_label}] {len(seq)}bp[/dim]"
-        )
-        
-        # 按 wrap 宽度切分，逐行着色并输出（避免整条 Rich Text 的 span explosion）
-        for chunk_start in range(0, len(seq), wrap):
-            chunk_end = min(chunk_start + wrap, len(seq))
-            ruler = position_ruler(chunk_start + 1, chunk_end - chunk_start)
-            console.print("  ", end="")
-            console.print(ruler)
-            console.print("  ", end="")
-            console.print(colorize_sequence(seq[chunk_start:chunk_end], seq_type=seqtype))
-        
-        console.print()  # 序列间空行
+    try:
+        for header, seq in parse_fasta(str(file)):
+            _print_fasta_record(header, seq, wrap)
+            console.print()  # 序列间空行
+    except OSError as e:
+        _read_error_exit(e)
 
 @app.command()
 def stats(
@@ -122,19 +242,22 @@ def stats(
     total_len = 0
     count = 0
 
-    for header, seq in parse_fasta(str(file)):
-        length, gc = calc_sequence_stats(seq)
-        lengths.append(length)
-        total_gc += gc
-        total_len += length
-        count += 1
+    try:
+        for header, seq in parse_fasta(str(file)):
+            length, gc = calc_sequence_stats(seq)
+            lengths.append(length)
+            total_gc += gc
+            total_len += length
+            count += 1
+    except OSError as e:
+        _read_error_exit(e)
     
     if count == 0:
         console.print("[red]文件中没有序列[/red]")
         raise typer.Exit(code=1)  # 错误路径应非零退出
 
     lengths.sort(reverse=True)
-    n50 = _calc_n50(lengths, total_len)
+    n50 = calc_n50(lengths, total_len)
     # 用 Rich Table 输出
     table = Table(title=f"{file} 统计摘要")
     table.add_column("指标", style="bold cyan")
@@ -159,26 +282,15 @@ def head(
     """查看 FASTA 文件的前 N 条序列。"""
     _check_file(file)
     count = 0
-    for header, seq in parse_fasta(str(file)):
-        if count >= n:
-            break
-        
-        seqtype = detect_seq_type(seq)
-        type_label = "DNA" if seqtype == SeqType.DNA else "Protein" if seqtype == SeqType.PROTEIN else "Unknown"
-        console.print(
-            f"[bold cyan]> {header}[/bold cyan] "
-            f"[dim]\\[{type_label}] {len(seq)}bp[/dim]"
-        )
-        # 按 chunk 着色，避免整条 span explosion
-        for chunk_start in range(0, len(seq), wrap):
-            chunk_end = min(chunk_start + wrap, len(seq))
-            ruler = position_ruler(chunk_start + 1, chunk_end - chunk_start)
-            console.print("  ", end="")
-            console.print(ruler)
-            console.print("  ", end="")
-            console.print(colorize_sequence(seq[chunk_start:chunk_end], seq_type=seqtype))
-        console.print()
-        count += 1
+    try:
+        for header, seq in parse_fasta(str(file)):
+            if count >= n:
+                break
+            _print_fasta_record(header, seq, wrap)
+            console.print()
+            count += 1
+    except OSError as e:
+        _read_error_exit(e)
     
     if count == 0:
         console.print("[red]文件中没有序列[/red]")
@@ -240,9 +352,11 @@ def fqview(
 
             console.print()  # read 间空行
     except ValueError as e:
-        # 畸形 FASTQ（非 '@' 开头记录等）：友好报错而非裸 traceback
+        # 畸形 FASTQ（非 '@' 开头记录/截断等）：友好报错而非裸 traceback
         console.print(f"[red]错误: {e}[/red]")
         raise typer.Exit(code=1) from None
+    except OSError as e:
+        _read_error_exit(e)
     
     if count == 0:
         console.print("[red]文件中没有序列[/red]")
@@ -251,15 +365,16 @@ def fqview(
     console.print(f"[dim]共显示 {count} 条 reads[/dim]")
 
 
-@app.command()
+@app.command(hidden=True)
 def browse(
     files: list[Path] = typer.Argument(help="FASTA/FASTQ 文件或目录路径（目录会启动文件选择器）"),
 ):
-    """交互式浏览 FASTA/FASTQ 文件（支持多文件标签页、目录浏览）。"""
+    """交互式浏览 FASTA/FASTQ/VCF 文件（主功能；等价于 seqviz <路径>，保留作兼容别名）。"""
     for p in files:  # 校验路径存在，与其他子命令的友好报错保持一致
         if not p.exists():
             console.print(f"[red]错误: 路径不存在: {p}[/red]")
             raise typer.Exit(code=1)
+        _reject_unsupported(p)
     _launch_browser(list(files))
 
 
@@ -326,14 +441,3 @@ def config(
     )
     console.print(f"[dim]可用主题:[/dim] {theme_list}")
     console.print(f"[dim]在 config.json 中设置 \"theme\": \"{themes[0]}\" 切换主题[/dim]")
-
-
-def _calc_n50(sorted_lengths: list[int], total_len: int) -> int:
-    """计算 N50：累计长度达到总长 50% 时对应的序列长度。"""
-    half = total_len / 2
-    cumsum = 0
-    for length in sorted_lengths:
-        cumsum += length
-        if cumsum >= half:
-            return length
-    return 0

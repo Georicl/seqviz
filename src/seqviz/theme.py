@@ -372,3 +372,77 @@ def build_file_browser_css(theme: dict) -> str:
         color: {fg};
     }}
     """
+
+
+def build_vcf_browser_css(theme: dict) -> str:
+    """生成 VCF 浏览器（VcfBrowser）的 CSS。"""
+    bg = theme["background"]
+    fg = theme["foreground"]
+    border = theme["border"]
+    accent = theme.get("accent", fg)
+    panel = theme.get("panel", bg)
+    highlight = theme.get("highlight", bg)
+    return f"""
+    Screen {{
+        background: {bg};
+    }}
+    Horizontal {{
+        height: 1fr;
+    }}
+    #variant-list {{
+        width: 42;
+        border-right: thick {border};
+        background: {bg};
+        color: {fg};
+    }}
+    #variant-list:focus {{
+        border-right: thick {accent};
+    }}
+    #variant-list > OptionList > .option-list--option-highlighted {{
+        background: {highlight};
+        color: {fg};
+    }}
+    #variant-list > OptionList > .option-list--option-hover {{
+        background: {highlight};
+    }}
+    #abs-scrollbar {{
+        width: 1;
+        background: {bg};
+        color: {accent};
+    }}
+    #detail {{
+        width: 1fr;
+        height: 1fr;
+        background: {bg};
+        color: {fg};
+        /* 透明边框占位：聚焦切色时不引起内容重排 */
+        border-left: thick {bg};
+    }}
+    #detail:focus {{
+        border-left: thick {accent};
+    }}
+    #detail-content {{
+        height: auto;
+        padding: 0 1;
+    }}
+    #status-bar {{
+        dock: bottom;
+        height: 1;
+        background: {panel};
+        color: {fg};
+    }}
+    #search-input {{
+        dock: bottom;
+        height: 3;
+        margin: 0 1;
+        background: {panel};
+    }}
+    Header {{
+        background: {panel};
+        color: {fg};
+    }}
+    Footer {{
+        background: {panel};
+        color: {fg};
+    }}
+    """

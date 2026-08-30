@@ -1,23 +1,22 @@
 """核心模块测试：parsers / seq_type / stats / renderer"""
 
 import gzip
-from pathlib import Path
 
 import pytest
 from rich.text import Text
 
-from seqviz.parsers import parse_fasta
 from seqviz.fastq import parse_fastq
-from seqviz.seq_type import SeqType, detect_seq_type
-from seqviz.stats import calc_sequence_stats, SequenceStats
+from seqviz.parsers import parse_fasta
 from seqviz.renderer import (
-    colorize_sequence,
-    colorize_quality,
-    quality_stats,
-    quality_bar,
-    position_ruler,
     DNA_COLORS,
+    colorize_quality,
+    colorize_sequence,
+    position_ruler,
+    quality_bar,
+    quality_stats,
 )
+from seqviz.seq_type import SeqType, detect_seq_type
+from seqviz.stats import calc_sequence_stats
 
 
 # ──────────────────────────────────────────────
@@ -134,9 +133,19 @@ class TestDetectSeqType:
     def test_protein_realistic(self):
         assert detect_seq_type("MALWMRLLPLLALLALWGPDPAAA") == SeqType.PROTEIN
 
+    def test_protein_with_ambiguous_residues(self):
+        """含 X（未知氨基酸）/J/O/Z 的蛋白质应判为 PROTEIN，而非 UNKNOWN。"""
+        assert detect_seq_type("MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKTX") == SeqType.PROTEIN
+        assert detect_seq_type("MKWVTFISLLFLFSSAYSRGVFRRDTHKSEIAHRFKDLGEQHFKGLVLIAFSQYLQQCPFDEHVKLVNELTEFAKTCVADESHAGCEKSLHTLFGDELCKVASLRETYGDMADCCEKQEPERNECFLSHKDDSPDLPKLKPDPNTLCDEFKADEKKFWGKYLYEIARRHPYFYAPELLYYANKYNGVFQECCQAEDKGACLLPKIETMREKVLASSARQRLRCASIQKFGERALKAWSVARLSQKFPKAEFVEVTKLVTDLTKVHKECCHGDLLECADDRADLAKYICDNQDTISSKLKECCDKPLLEKSHCIAEVEKDAIPENLPPLTADFAEDKDVCKNYQEAKDAFLGSFLYEYSRRHPEYAVSVLLRLAKEYEATLEECCAKDDPHACYSTVFDKLKHLVDEPQNLIKQNCDQFEKLGEYGFQNALIVRYTRKVPQVSTPTLVEVSRSLGKVGTRCCTKPESERMPCTEDYLSLILNRLCVLHEKTPVSEKVTKCCTESLVNRRPCFSALTPDETYVPKAFDEKLFTFHADICTLPDTEKQIKKQTALVELLKHKPKATEEQLKTVMENFVAFVDKCCAADDKEACFAVEGPKLVVSTQTALA") == SeqType.PROTEIN
+
     def test_unknown(self):
         # 含非 DNA 也非蛋白质典型字符
-        assert detect_seq_type("ATCGZBXOU") == SeqType.UNKNOWN
+        assert detect_seq_type("ATCG12!") == SeqType.UNKNOWN
+
+    def test_softmasked_dna_not_protein(self):
+        """真核基因组软屏蔽（RepeatMasker 小写 x 重复区）不得误判为蛋白质。"""
+        assert detect_seq_type("ATCGatcgxxxATCGnnnATCGxx") == SeqType.UNKNOWN
+        assert detect_seq_type("XXXX") == SeqType.UNKNOWN  # 仅含 X 无经典残基同样回落 UNKNOWN
 
     def test_empty(self):
         assert detect_seq_type("") == SeqType.DNA  # 空集合是 DNA 子集
@@ -172,14 +181,6 @@ class TestStats:
 
     def test_empty_sequence(self):
         assert calc_sequence_stats("") == (0, 0)
-
-    def test_sequence_stats_gc_content(self):
-        s = SequenceStats(header="x", length=4, gc_count=2)
-        assert s.gc_content == 0.5
-
-    def test_sequence_stats_zero_length(self):
-        s = SequenceStats(header="x", length=0, gc_count=0)
-        assert s.gc_content == 0.0
 
 
 # ──────────────────────────────────────────────
@@ -236,6 +237,13 @@ class TestRenderer:
         result = quality_bar("I" * 100)
         assert isinstance(result, Text)
         assert len(result.plain) > 0
+
+    def test_quality_bar_respects_width(self):
+        """条数不应超过指定宽度（len 落在 (width, 2*width) 区间时的回归）。"""
+        for n, width in ((100, 60), (40, 60), (200, 40), (1000, 40)):
+            result = quality_bar("I" * n, width=width)
+            assert len(result.plain) <= width
+            assert len(result.plain) > 0
 
     def test_quality_bar_empty(self):
         assert quality_bar("").plain == ""

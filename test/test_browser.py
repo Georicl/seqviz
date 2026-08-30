@@ -3,9 +3,7 @@
 import asyncio
 from pathlib import Path
 
-import pytest
-
-from seqviz.browser import FastaBrowser
+from seqviz.browser import FastaBrowser, FileFormat, SequenceInfo, SequenceList
 
 TEST_DIR = Path(__file__).parent
 TEST_FA = TEST_DIR / "test.fa"
@@ -175,12 +173,12 @@ class TestCopyExport:
     def test_copy_seq_to_clipboard(self, monkeypatch):
         async def _t():
             copied = {}
-            import seqviz.browser as b
+            import seqviz.clipboard as cb
             def fake_run(cmd, input=None, check=False):
                 copied["data"] = input.decode() if input else ""
                 class R: pass
                 return R()
-            monkeypatch.setattr(b.subprocess, "run", fake_run)
+            monkeypatch.setattr(cb.subprocess, "run", fake_run)
             app = FastaBrowser([TEST_FA])
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
@@ -549,3 +547,79 @@ class TestNonUtf8Header:
             assert len(seqs) == 1
             assert "caf" in seqs[0].header  # 非法字节被替换，其余保留
         run(_t())
+
+
+class TestTruncatedFastq:
+    def test_no_phantom_records(self, tmp_path):
+        """截断的 FASTQ 不应产生空序列/空质量的幻影条目。"""
+        p = tmp_path / "trunc.fastq"
+        p.write_text("@r1\nACGT\n+\n")  # 缺质量行
+        seqs = FastaBrowser._scan_file(p, FileFormat.FASTQ)
+        assert seqs == []
+
+    def test_wellformed_still_scans(self, tmp_path):
+        """完整记录的 FASTQ 扫描不受截断守卫影响。"""
+        p = tmp_path / "ok.fastq"
+        p.write_text("@r1\nACGT\n+\nIIII\n@r2\nGGCC\n+\nHHHH\n")
+        seqs = FastaBrowser._scan_file(p, FileFormat.FASTQ)
+        assert len(seqs) == 2
+
+
+# ──────────────────────────────────────────────
+# issue #4 回归：句柄泄露 + 批量追加
+# ──────────────────────────────────────────────
+class TestIssue4HandleCleanup:
+    def test_sequence_view_closes_handle_on_unmount(self):
+        """SequenceView 自身卸载时关闭持久句柄（App 级钩子触发时子组件已卸载）。"""
+        captured = {}
+        async def _t():
+            app = FastaBrowser([TEST_FA])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                mv = app.query_one("#main-0")
+                mv._get_fh()  # 确保持久句柄已打开
+                assert mv._fh is not None and not mv._fh.closed
+                captured["view"] = mv
+        run(_t())
+        # 退出后句柄应被关闭（close() 置 None）
+        assert captured["view"]._fh is None
+
+    def test_all_views_closed_on_exit(self):
+        """多文件标签页的所有 SequenceView 退出后句柄均关闭。"""
+        captured = {}
+        async def _t():
+            app = FastaBrowser([TEST_FA, TEST_FASTQ])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                views = list(app.query("SequenceView"))
+                for mv in views:
+                    mv._get_fh()
+                assert all(mv._fh is not None for mv in views)
+                captured["views"] = views
+        run(_t())
+        assert all(mv._fh is None for mv in captured["views"])
+
+
+class TestIssue4BatchAppend:
+    def test_append_sequences_batch_adds_all(self):
+        """批量 add_options：append_sequences 一次性追加全部 Option。"""
+        seqs = [SequenceInfo(i, f"seq{i}", i * 100, 50) for i in range(5)]
+        sl = SequenceList(seqs[:2])
+        assert sl.option_count == 2
+        sl.append_sequences(seqs[2:])
+        assert sl.option_count == 5
+
+    def test_init_batch_builds_all_options(self):
+        """构造时批量添加，Option 数与序列数一致且 id 正确。"""
+        seqs = [SequenceInfo(i, f"h{i}", i * 10, 20) for i in range(10)]
+        sl = SequenceList(seqs)
+        assert sl.option_count == 10
+        ids = [sl.get_option_at_index(i).id for i in range(10)]
+        assert ids == [f"seq-{i}" for i in range(10)]
+
+    def test_append_empty_batch_noop(self):
+        """空批次追加不改变 Option 数。"""
+        seqs = [SequenceInfo(i, f"s{i}", i, 10) for i in range(3)]
+        sl = SequenceList(seqs)
+        sl.append_sequences([])
+        assert sl.option_count == 3

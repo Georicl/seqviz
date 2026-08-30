@@ -1,6 +1,5 @@
 import gzip
 import re
-import subprocess
 from collections.abc import Generator
 from enum import Enum
 from pathlib import Path
@@ -22,7 +21,7 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
-from seqviz import config
+from seqviz import clipboard, config
 from seqviz.renderer import (
     colorize_quality,
     colorize_sequence,
@@ -101,7 +100,7 @@ class SequenceInfo:
         self.checkpoints = None     # [(碱基位置, 文件偏移)]，仅非等宽大序列使用
 
 
-def _iter_sequences(filepath: Path, fmt: FileFormat, start_idx: int = 0) -> Generator[SequenceInfo, None, None]:
+def _iter_sequences(filepath: Path, fmt: FileFormat, start_idx: int = 0) -> Generator[SequenceInfo]:
     """通用序列迭代器：二进制模式流式解析 FASTA/FASTQ，yield SequenceInfo。
 
     Args:
@@ -127,6 +126,8 @@ def _iter_sequences(filepath: Path, fmt: FileFormat, start_idx: int = 0) -> Gene
                 offset += len(plus_line)
                 quality_line = f.readline()  # quality 行
                 offset += len(quality_line)
+                if not (seq_line and plus_line and quality_line):
+                    return  # 文件在记录中间截断：丢弃不完整记录，避免幻影条目
                 if idx >= start_idx:
                     header = header_line.strip()[1:].decode(errors="replace")
                     yield SequenceInfo(idx, header, record_offset, len(seq_line.strip()), has_quality=True)
@@ -976,7 +977,7 @@ class FastaBrowser(App):
                 self._update_status()
 
     # ── 命令栏（动态挂载/卸载）──
-    def _get_command_bar(self) -> "CommandBar | None":
+    def _get_command_bar(self) -> CommandBar | None:
         bars = self.query("#command-bar")
         return bars.first() if bars else None
 
@@ -1068,40 +1069,11 @@ class FastaBrowser(App):
 
     # ── 导出 & 复制 ──
     def _copy_to_clipboard(self, text: str) -> bool:
-        """复制文本到剪贴板，成功返回 True。
+        """复制文本到剪贴板，成功返回 True（系统工具优先，失败回退 OSC 52）。
 
-        策略：系统工具优先（反馈可靠），失败后回退 OSC 52（适用于无图形界面/SSH 场景）。
+        实现见 clipboard.py，与 VcfBrowser 共用同一套回退策略。
         """
-        import platform
-        system = platform.system()
-        data = text.encode()
-        try:
-            if system == "Darwin":  # macOS
-                subprocess.run(["pbcopy"], input=data, check=True)
-                return True
-            elif system == "Linux":
-                # 依次尝试 xclip / xsel / wl-copy，任一成功即可
-                for cmd in (
-                    ["xclip", "-selection", "clipboard"],
-                    ["xsel", "--clipboard", "--input"],
-                    ["wl-copy"],
-                ):
-                    try:
-                        subprocess.run(cmd, input=data, check=True)
-                        return True
-                    except (OSError, subprocess.CalledProcessError):
-                        continue
-            else:  # Windows
-                subprocess.run(["clip"], input=data, check=True)
-                return True
-        except (OSError, subprocess.CalledProcessError):
-            pass  # 工具缺失或异常退出（非 OSError），回退 OSC 52
-        # 回退: OSC 52 —— 通过终端转义序列写入本地剪贴板（需终端支持，SSH 下同样有效）
-        try:
-            self.copy_to_clipboard(text)
-            return True
-        except Exception:  # noqa: BLE001
-            return False  # 剪贴板不可用
+        return clipboard.copy_to_clipboard(text, self.copy_to_clipboard)
 
     def _handle_range_copy(self, value: str):
         """解析位置范围并复制对应序列片段。"""
@@ -1134,7 +1106,7 @@ class FastaBrowser(App):
         else:
             self.notify("剪贴板不可用", title="范围复制", severity="warning")
 
-    def _iter_seq_text(self) -> Generator[str, None, None]:
+    def _iter_seq_text(self) -> Generator[str]:
         """流式生成当前序列的纯文本（FASTA/FASTQ 格式），逐块 yield，内存恒定。
 
         大序列不会一次性拼接整条字符串，导出时边生成边写入。

@@ -143,6 +143,159 @@ class TestBrowseCommand:
         assert result.exit_code == 0
         assert captured["n_tabs"] == 1
 
+    def test_browse_vcf_routes_to_vcf_browser(self, monkeypatch):
+        """browse 单个 .vcf 应路由到 VcfBrowser 而非 FastaBrowser。"""
+        import seqviz.cli as cli_mod
+        from seqviz import vcf_browser as vcf_browser_mod
+        called: dict = {}
+
+        def fake_vcf_run(self):
+            called["vcf"] = str(self.filepath)
+
+        def fake_fasta_run(self):
+            called["fasta"] = True
+
+        monkeypatch.setattr(vcf_browser_mod.VcfBrowser, "run", fake_vcf_run)
+        monkeypatch.setattr(cli_mod.FastaBrowser, "run", fake_fasta_run)
+        vcf_path = str(Path(__file__).parent / "sample.vcf")
+        result = runner.invoke(app, ["browse", vcf_path])
+        assert result.exit_code == 0
+        assert called.get("vcf") == vcf_path
+        assert "fasta" not in called
+
+    def test_is_vcf_helper(self, tmp_path):
+        """_is_vcf 辅助函数：后缀判定（大小写不敏感），不存在/非文件为 False。"""
+        from seqviz.cli import _is_vcf
+        f = tmp_path / "x.VCF"
+        f.write_text("")
+        assert _is_vcf(f) is True
+        fa = tmp_path / "x.fa"
+        fa.write_text("")
+        assert _is_vcf(fa) is False
+        assert _is_vcf(tmp_path / "missing.vcf") is False
+
+    def test_browse_empty_vcf_friendly_error(self, tmp_path):
+        """空 VCF：友好报错并非零退出（对齐现有空文件策略）。"""
+        f = tmp_path / "empty.vcf"
+        f.write_text("")
+        result = runner.invoke(app, ["browse", str(f)])
+        assert result.exit_code != 0
+        assert "缺少 #CHROM 表头" in result.output
+
+    def test_browse_header_only_vcf_friendly_error(self, tmp_path):
+        """有表头但无变异记录：友好报错并非零退出。"""
+        f = tmp_path / "hdr.vcf"
+        f.write_text("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+        result = runner.invoke(app, ["browse", str(f)])
+        assert result.exit_code != 0
+        assert "没有变异记录" in result.output
+
+    def test_browse_vcf_gz_rejected(self, tmp_path):
+        """压缩 VCF（.vcf.gz）应友好报错，而非静默按 FASTA 解析打开空界面。"""
+        import gzip
+        f = tmp_path / "x.vcf.gz"
+        with gzip.open(f, "wt") as fh:
+            fh.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+                     "chr1\t1\t.\tA\tG\t50\tPASS\t.\n")
+        result = runner.invoke(app, ["browse", str(f)])
+        assert result.exit_code == 1
+        assert "压缩 VCF" in result.output
+        assert "Traceback" not in result.output
+
+    def test_browse_unsupported_bam_rejected(self, tmp_path):
+        """明确不支持的文件类型（如 .bam）应友好报错。"""
+        f = tmp_path / "x.bam"
+        f.write_bytes(b"\x1f\x8b")
+        result = runner.invoke(app, ["browse", str(f)])
+        assert result.exit_code == 1
+        assert "暂不支持" in result.output
+        assert "Traceback" not in result.output
+
+    def test_browse_mixed_vcf_and_fasta_skips_vcf(self, tmp_path, monkeypatch):
+        """VCF 与序列文件混合打开：VCF 被剥离并提示，FastaBrowser 只收到序列文件。"""
+        import seqviz.cli as cli_mod
+        fa = tmp_path / "x.fa"
+        fa.write_text(">s1\nATCG\n")
+        vcf = tmp_path / "x.vcf"
+        vcf.write_text("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+                       "chr1\t1\t.\tA\tG\t50\tPASS\t.\n")
+        captured: dict = {}
+
+        def fake_fasta_run(self):
+            captured["paths"] = [str(t.filepath) for t in self.file_tabs]
+
+        monkeypatch.setattr(cli_mod.FastaBrowser, "run", fake_fasta_run)
+        result = runner.invoke(app, ["browse", str(vcf), str(fa)])
+        assert result.exit_code == 0
+        assert "混合打开" in result.output  # 提示信息已输出
+        assert captured["paths"] == [str(fa)]  # VCF 未进入 FastaBrowser
+
+
+# ──────────────────────────────────────────────
+# 浏览为主功能：seqviz <路径> 直接打开浏览器
+# ──────────────────────────────────────────────
+class TestDefaultBrowseRouting:
+    def test_path_without_subcommand_opens_browser(self, monkeypatch):
+        """seqviz test.fa ≡ seqviz browse test.fa（主功能直达）。"""
+        import seqviz.cli as cli_mod
+        captured: dict = {}
+
+        def fake_run(self):
+            captured["n_tabs"] = len(self.file_tabs)
+
+        monkeypatch.setattr(cli_mod.FastaBrowser, "run", fake_run)
+        result = runner.invoke(app, [TEST_FA])
+        assert result.exit_code == 0
+        assert captured["n_tabs"] == 1
+
+    def test_missing_path_without_subcommand(self):
+        """seqviz nonexistent.fa 友好报错而非裸 traceback / 未知命令。"""
+        result = runner.invoke(app, ["nonexistent_file.fa"])
+        assert result.exit_code != 0
+        assert "路径不存在" in result.output
+
+    def test_vcf_without_subcommand_routes_to_vcf_browser(self, monkeypatch):
+        """seqviz x.vcf 直接路由到 VcfBrowser。"""
+        import seqviz.cli as cli_mod
+        from seqviz import vcf_browser as vcf_browser_mod
+        called: dict = {}
+
+        def fake_vcf_run(self):
+            called["vcf"] = str(self.filepath)
+
+        monkeypatch.setattr(vcf_browser_mod.VcfBrowser, "run", fake_vcf_run)
+        monkeypatch.setattr(cli_mod.FastaBrowser, "run", lambda self: called.__setitem__("fasta", True))
+        vcf_path = str(Path(__file__).parent / "sample.vcf")
+        result = runner.invoke(app, [vcf_path])
+        assert result.exit_code == 0
+        assert called.get("vcf") == vcf_path
+        assert "fasta" not in called
+
+    def test_no_args_opens_current_directory(self, monkeypatch):
+        """seqviz 不带参数：默认打开当前目录文件浏览器。"""
+        import seqviz.cli as cli_mod
+        captured: dict = {}
+
+        def fake_launch(paths):
+            captured["paths"] = [str(p) for p in paths]
+
+        monkeypatch.setattr(cli_mod, "_launch_browser", fake_launch)
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0
+        assert captured["paths"] == ["."]
+
+    def test_subcommands_not_shadowed(self):
+        """已知子命令不被默认路由吞掉：view 仍正常执行。"""
+        result = runner.invoke(app, ["view", TEST_FA])
+        assert result.exit_code == 0
+        assert ">" in result.output
+
+    def test_options_not_routed_to_browse(self):
+        """以 - 开头的参数不被当作路径路由（--help 正常显示）。"""
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+        assert "Usage" in result.output
+
 
 class TestHelpCommand:
     def test_main_help(self):
@@ -150,8 +303,10 @@ class TestHelpCommand:
         assert result.exit_code == 0
         assert "view" in result.output
         assert "stats" in result.output
-        assert "browse" in result.output
         assert "config" in result.output
+        # browse 为主功能默认路由，不再作为独立子命令展示
+        assert "browse" not in result.output
+        assert "seqviz reads.fastq" in result.output or "直接跟文件" in result.output
 
     def test_view_help(self):
         result = runner.invoke(app, ["view", "--help"])
@@ -161,12 +316,12 @@ class TestHelpCommand:
 class TestN50Value:
     def test_n50_numeric_correctness(self):
         """N50 数值正确性（回归：此前仅字符串存在断言）。"""
-        from seqviz.cli import _calc_n50
+        from seqviz.stats import calc_n50
         # 长度 [20, 12]，总长 32，半值 16；降序累计 20 >= 16 → N50 = 20
-        assert _calc_n50([20, 12], 32) == 20
+        assert calc_n50([20, 12], 32) == 20
         # [100, 50, 30, 20] 总长 200，半值 100；累计 100 >= 100 → N50 = 100
-        assert _calc_n50([100, 50, 30, 20], 200) == 100
-        assert _calc_n50([], 0) == 0
+        assert calc_n50([100, 50, 30, 20], 200) == 100
+        assert calc_n50([], 0) == 0
 
     def test_stats_n50_value_in_output(self):
         """stats 输出的 N50 应为具体数值（test.fa: 20bp + 12bp → N50=20）。"""
@@ -198,6 +353,46 @@ class TestEmptyFileCli:
         result = runner.invoke(app, ["fqview", str(p)])
         assert result.exit_code != 0
         assert "没有序列" in result.output
+
+
+class TestCommandOnDirectory:
+    """对目录执行文件命令应友好报错，而非裸 traceback。"""
+
+    def test_view_on_directory(self, tmp_path):
+        result = runner.invoke(app, ["view", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "不是文件" in result.output
+        assert "Traceback" not in result.output
+
+    def test_stats_on_directory(self, tmp_path):
+        result = runner.invoke(app, ["stats", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "不是文件" in result.output
+        assert "Traceback" not in result.output
+
+    def test_head_on_directory(self, tmp_path):
+        result = runner.invoke(app, ["head", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "不是文件" in result.output
+        assert "Traceback" not in result.output
+
+    def test_fqview_on_directory(self, tmp_path):
+        result = runner.invoke(app, ["fqview", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "不是文件" in result.output
+        assert "Traceback" not in result.output
+
+
+class TestVersionOption:
+    def test_version_flag(self):
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+        assert result.output.strip().startswith("seqviz ")
+
+    def test_version_short_flag(self):
+        result = runner.invoke(app, ["-V"])
+        assert result.exit_code == 0
+        assert "seqviz" in result.output
 
 
 class TestMalformedFastq:
