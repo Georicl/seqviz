@@ -623,7 +623,7 @@ async def test_detail_shows_selected_variant():
         assert "10234" in app._detail_text()
 ```
 
-（注：确认 pytest-asyncio 已可用——参考现有 `test_browser.py` 的 async 测试写法与 conftest，若项目用 `run_test` 同步上下文则对齐其风格。）
+（注：确认 pytest-asyncio 已可用，参考现有 `test_browser.py` 的 async 测试写法与 conftest，若项目用 `run_test` 同步上下文则对齐其风格。）
 
 - [ ] **Step 2: 运行确认失败**
 - [ ] **Step 3: 实现** `src/seqviz/vcf_browser.py`（要点，镜像 browser.py 结构）：
@@ -865,7 +865,7 @@ class VcfBrowser(App):
         return theme_mod.build_vcf_browser_css(theme_mod.get_theme())
 ```
 
-（CSS 接入方式：对照 browser.py 现有做法——若它用 `CSS = ...` 类变量或 `self.stylesheet`，则按同样方式接入 `build_vcf_browser_css`，删除示意中的 `get_css`。）
+（CSS 接入方式：对照 browser.py 现有做法，若它用 `CSS = ...` 类变量或 `self.stylesheet`，则按同样方式接入 `build_vcf_browser_css`，删除示意中的 `get_css`。）
 
 - [ ] **Step 4: 运行确认通过**
 - [ ] **Step 5: 提交**：`git commit -am "feat(vcf): VcfBrowser skeleton with list and detail pane"`
@@ -1078,7 +1078,7 @@ def _launch_browser(paths: list[Path]):
   - file_browser 格式标记：`.vcf` 显示 `[V]`（对照现有 `[F]/[Q]` 判定函数扩展）
   - 打开选中文件时：若唯一选中为 `.vcf` → 启动 VcfBrowser（对照现有打开路径的实现方式接入）
 
-- [ ] **Step 3: 测试**：`test_cli.py` 增加路由测试（用 CliRunner 无法跑 TUI，则直接断言 `_launch_browser` 分支逻辑——可提取 `_is_vcf(path)` 辅助函数并单测）
+- [ ] **Step 3: 测试**：`test_cli.py` 增加路由测试（用 CliRunner 无法跑 TUI，则直接断言 `_launch_browser` 分支逻辑，可提取 `_is_vcf(path)` 辅助函数并单测）
 - [ ] **Step 4: 全量运行**：`uv run pytest test/ -x -q` → 全部通过
 - [ ] **Step 5: 提交**：`git commit -am "feat(cli): route .vcf to VcfBrowser and support in file selector"`
 
@@ -1088,7 +1088,7 @@ def _launch_browser(paths: list[Path]):
 
 **Files:** Modify `README.md`
 
-- [ ] **Step 1: README 增加 VCF 章节**（功能特性列表加 `🧪 VCF 变异浏览`，命令一览 `seqviz browse x.vcf`，快捷键表格，版本号不变——发布时再 bump）
+- [ ] **Step 1: README 增加 VCF 章节**（功能特性列表加 `🧪 VCF 变异浏览`，命令一览 `seqviz browse x.vcf`，快捷键表格，版本号不变，发布时再 bump）
 - [ ] **Step 2: 实测**：`uv run seqviz browse test/sample.vcf`，人工验证：列表着色、j/k 导航、f 过滤、s 排序、t 矩阵、i 信息、y 复制、q 退出
 - [ ] **Step 3: 全量回归**：`uv run pytest test/ -v` → 全部通过
 - [ ] **Step 4: 提交**：`git commit -am "docs: VCF browsing section in README"`
@@ -1099,4 +1099,4 @@ def _launch_browser(paths: list[Path]):
 
 - **Spec 覆盖**：布局(Task 6) / 交互(Task 6-8) / 懒扫描(Task 3) / 统计(Task 4) / 错误处理(Task 3 畸形行、空文件) / 主题(Task 5) / 路由(Task 9) ✓。染色体密度图与 bgzip 明确不做（spec YAGNI）✓
 - **类型一致性**：`scan_vcf` 返回三元组 `(meta, variants, skipped)` 各任务一致；`load_variant_detail(path, variant, sample_names)` 签名一致；`Variant.info` 索引阶段已填充（Task 3 split("\t",8) 含第 8 列）与 Task 4 stats 依赖一致 ✓
-- **已知待执行时确认点**：剪贴板函数在 browser.py 的实际导出名；CSS 接入方式（类变量 vs 其他）；async 测试基建（对齐 test_browser.py）——已在对应 Task 内注明对齐方式
+- **已知待执行时确认点**：剪贴板函数在 browser.py 的实际导出名；CSS 接入方式（类变量 vs 其他）；async 测试基建（对齐 test_browser.py）。已在对应 Task 内注明对齐方式

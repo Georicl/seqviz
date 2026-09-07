@@ -176,7 +176,7 @@ class SequenceList(OptionList):
         """为新扫描到的序列批量追加 Option（后台扫描用）。
 
         使用 add_options() 批量添加，避免逐个 add_option 每次标脏 OptionList
-        造成的重绘开销。只加 Option，不追加数据 list——数据由 FileTab.sequences 统一持有。
+        造成的重绘开销。只加 Option，不追加数据 list；数据由 FileTab.sequences 统一持有。
         """
         self.add_options(
             [Option(self._make_label(s), id=f"seq-{s.index}") for s in new_seqs]
@@ -405,7 +405,7 @@ class SequenceView(Static):
               供非等宽行宽记录快速定位（uniform 时不使用）。
 
         uniform 判定宽容“末行短尾”（FASTA 最后一行不足行宽是合法的），
-        但不宽容中间行宽变化、空行、行首空白或末行长于首行——
+        但不宽容中间行宽变化、空行、行首空白或末行长于首行，
         这些都会导致等宽 offset 换算错位。
         """
         length = 0
