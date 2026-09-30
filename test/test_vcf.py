@@ -53,6 +53,8 @@ class TestClassifyVariant:
         assert classify_variant("A", "<INS>") == VariantType.COMPLEX
         assert classify_variant("A", "*") == VariantType.COMPLEX
         assert classify_variant("A", "<DUP>,G") == VariantType.COMPLEX  # 多等位取首个
+        assert classify_variant("A", "A]chr2:123]") == VariantType.COMPLEX
+        assert classify_variant("A", "[chr2:123[A") == VariantType.COMPLEX
 
 
 class TestParseGenotype:
@@ -118,6 +120,7 @@ class TestParseVariantLine:
     def test_dot_id_and_qual(self):
         v = parse_variant_line("chr1\t5\t.\tA\tG\t.\tPASS\t.")
         assert v.id == "" and v.qual is None
+        assert v.info == {}
 
     def test_malformed_fewer_than_8_cols(self):
         assert parse_variant_line("chr1\t100\tA") is None

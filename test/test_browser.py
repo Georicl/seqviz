@@ -1,9 +1,18 @@
 """TUI 浏览器交互测试：导航、搜索、跳转、复制、返回、多标签页、命令栏渲染"""
 
 import asyncio
+import threading
 from pathlib import Path
 
-from seqviz.browser import FastaBrowser, FileFormat, SequenceInfo, SequenceList
+import pytest
+
+from seqviz.browser import (
+    FastaBrowser,
+    FileFormat,
+    SequenceInfo,
+    SequenceList,
+    SequenceView,
+)
 
 TEST_DIR = Path(__file__).parent
 TEST_FA = TEST_DIR / "test.fa"
@@ -563,6 +572,78 @@ class TestTruncatedFastq:
         p.write_text("@r1\nACGT\n+\nIIII\n@r2\nGGCC\n+\nHHHH\n")
         seqs = FastaBrowser._scan_file(p, FileFormat.FASTQ)
         assert len(seqs) == 2
+
+    def test_invalid_separator_and_short_quality_rejected(self, tmp_path):
+        for name, content in (
+            ("separator", "@r\nACGT\nNOT_PLUS\nIIII\n"),
+            ("quality", "@r\nACGT\n+\nII\n"),
+        ):
+            p = tmp_path / f"{name}.fastq"
+            p.write_text(content)
+            with pytest.raises(ValueError, match="FASTQ 格式错误"):
+                FastaBrowser._scan_file(p, FileFormat.FASTQ)
+
+
+class TestLargeFastaInitialDisplay:
+    def test_quick_scan_stops_before_single_unwrapped_sequence_end(self, tmp_path):
+        p = tmp_path / "single.fa"
+        p.write_bytes(b">chr1\n" + b"A" * 2_000_000 + b"\n")
+        seqs, done = FastaBrowser._scan_file_quick(p, FileFormat.FASTA)
+        assert len(seqs) == 1
+        assert seqs[0].header == "chr1"
+        assert done is False
+
+    def test_first_header_after_quick_scan_loads_when_background_finds_it(self, tmp_path):
+        p = tmp_path / "preamble.fa"
+        p.write_bytes(b";" + b"x" * 1_100_000 + b"\n>chr1\nACGT\n")
+
+        async def _t():
+            app = FastaBrowser([p])
+            assert not app.file_tabs[0].sequences
+            async with app.run_test(size=(100, 30)):
+                for _ in range(100):
+                    if app.file_tabs[0].sequences:
+                        break
+                    await asyncio.sleep(0.02)
+                assert len(app.file_tabs[0].sequences) == 1
+                assert app.query_one("#main-0", SequenceView)._seq == "ACGT"
+
+        run(_t())
+
+    def test_first_screen_precedes_full_metrics_scan(self, tmp_path, monkeypatch):
+        seq = "ACGT" * 300_000
+        p = tmp_path / "single.fa"
+        p.write_text(f">chr1\n{seq}\n")
+        release = threading.Event()
+        original = SequenceView._scan_fasta_metrics
+
+        def delayed_metrics(f, seq_data_start, cancelled=None):
+            if not release.wait(timeout=5):
+                raise AssertionError("metrics scan was not released")
+            return original(f, seq_data_start, cancelled)
+
+        monkeypatch.setattr(SequenceView, "_scan_fasta_metrics", staticmethod(delayed_metrics))
+        monkeypatch.setattr(FastaBrowser, "DEFER_METRICS_FILE_BYTES", 1)
+
+        async def _t():
+            app = FastaBrowser([p])
+            try:
+                async with app.run_test(size=(100, 30)):
+                    mv = app.query_one("#main-0", SequenceView)
+                    assert mv._metrics_pending
+                    assert mv._load_chunk(0, 40) == seq[:40]
+                    release.set()
+                    for _ in range(100):
+                        if not mv._metrics_pending:
+                            break
+                        await asyncio.sleep(0.02)
+                    assert not mv._metrics_pending
+                    assert mv._seq_length == len(seq)
+                    assert mv._load_chunk(len(seq) - 40, len(seq)) == seq[-40:]
+            finally:
+                release.set()
+
+        run(_t())
 
 
 # ──────────────────────────────────────────────

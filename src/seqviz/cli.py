@@ -1,8 +1,11 @@
+from itertools import islice
 from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
+from rich.text import Text
 from typer.core import TyperGroup
 
 from seqviz import config as config_mod
@@ -49,17 +52,17 @@ def _check_file(file: Path) -> Path:
     真实读取错误由 open 层的友好报错兜底。
     """
     if not file.exists():
-        console.print(f"[red]错误: 文件不存在: {file}[/red]")
+        console.print(f"[red]错误: 文件不存在: {escape(str(file))}[/red]")
         raise typer.Exit(code=1)
     if file.is_dir():
-        console.print(f"[red]错误: 不是文件（是目录）: {file}[/red]")
+        console.print(f"[red]错误: 不是文件（是目录）: {escape(str(file))}[/red]")
         raise typer.Exit(code=1)
     return file
 
 
 def _read_error_exit(e: OSError) -> None:
     """读取文件失败（权限/IO 等）时友好报错，而非裸 traceback。"""
-    console.print(f"[red]错误: 无法读取文件: {e}[/red]")
+    console.print(f"[red]错误: 无法读取文件: {escape(str(e))}[/red]")
     raise typer.Exit(code=1) from None
 
 
@@ -75,11 +78,11 @@ def _reject_unsupported(path: Path) -> None:
     if suffix == ".gz":
         inner = Path(path.stem).suffix.lower()
         if inner == ".vcf":
-            console.print(f"[red]错误: 暂不支持压缩 VCF 文件: {path}[/red]（请先解压为 .vcf）")
+            console.print(f"[red]错误: 暂不支持压缩 VCF 文件: {escape(str(path))}[/red]（请先解压为 .vcf）")
             raise typer.Exit(code=1)
         suffix = inner
     if suffix in _UNSUPPORTED_EXTS:
-        console.print(f"[red]错误: 暂不支持的文件类型: {path}[/red]")
+        console.print(f"[red]错误: 暂不支持的文件类型: {escape(str(path))}[/red]")
         raise typer.Exit(code=1)
 
 
@@ -89,7 +92,7 @@ def _print_fasta_record(header: str, seq: str, wrap: int) -> None:
     type_label = "DNA" if seqtype == SeqType.DNA else "Protein" if seqtype == SeqType.PROTEIN else "Unknown"
 
     console.print(
-        f"[bold cyan]> {header}[/bold cyan] "
+        f"[bold cyan]> {escape(header)}[/bold cyan] "
         f"[dim]\\[{type_label}] {len(seq)}bp[/dim]"
     )
     # 按 wrap 宽度切分，逐行着色并输出（避免整条 Rich Text 的 span explosion）
@@ -113,13 +116,13 @@ def _run_vcf_browser(path: Path):
     try:
         meta, variants, skipped, cont = scan_vcf_quick(path, limit=QUICK_LIMIT)
     except OSError as exc:
-        console.print(f"[red]错误: 无法读取文件 {path}: {exc}[/red]")
+        console.print(f"[red]错误: 无法读取文件 {escape(str(path))}: {escape(str(exc))}[/red]")
         raise typer.Exit(code=1)
     if not meta.has_header:
-        console.print(f"[red]错误: 不是有效的 VCF 文件（缺少 #CHROM 表头）: {path}[/red]")
+        console.print(f"[red]错误: 不是有效的 VCF 文件（缺少 #CHROM 表头）: {escape(str(path))}[/red]")
         raise typer.Exit(code=1)
     if not variants:
-        console.print(f"[red]错误: VCF 文件中没有变异记录: {path}[/red]")
+        console.print(f"[red]错误: VCF 文件中没有变异记录: {escape(str(path))}[/red]")
         raise typer.Exit(code=1)
     VcfBrowser(path, initial=(meta, variants, skipped, cont)).run()
 
@@ -174,7 +177,7 @@ def _launch_browser(paths: list[Path]):
         mixed_vcfs = [p for p in open_paths if _is_vcf(p)]
         if mixed_vcfs and len(open_paths) > 1:
             console.print("[yellow]VCF 文件暂不支持与其他文件混合打开，已跳过: "
-                          + ", ".join(p.name for p in mixed_vcfs) + "[/yellow]")
+                          + ", ".join(escape(p.name) for p in mixed_vcfs) + "[/yellow]")
             open_paths = [p for p in open_paths if not _is_vcf(p)]
             if not open_paths:
                 if source_dir is not None:
@@ -182,7 +185,11 @@ def _launch_browser(paths: list[Path]):
                 raise typer.Exit()
 
         # 运行序列浏览器；按 B 返回 "back" 则重新进入文件选择器
-        result = FastaBrowser(open_paths, source_dir=source_dir).run()
+        try:
+            result = FastaBrowser(open_paths, source_dir=source_dir).run()
+        except (ValueError, OSError) as exc:
+            console.print(f"[red]错误: {escape(str(exc))}[/red]")
+            raise typer.Exit(code=1) from None
         if result != "back":
             break
 
@@ -259,7 +266,7 @@ def stats(
     lengths.sort(reverse=True)
     n50 = calc_n50(lengths, total_len)
     # 用 Rich Table 输出
-    table = Table(title=f"{file} 统计摘要")
+    table = Table(title=Text(f"{file} 统计摘要"))
     table.add_column("指标", style="bold cyan")
     table.add_column("值", style="green")
 
@@ -276,16 +283,14 @@ def stats(
 @app.command()
 def head(
     file: Path = typer.Argument(help="FASTA 文件路径"),
-    n: int = typer.Option(10, "-n", "--num", help="显示前 N 条序列"),
+    n: int = typer.Option(10, "-n", "--num", min=1, help="显示前 N 条序列"),
     wrap: int = typer.Option(60, min=1, help="序列每行换行宽度"),
 ):
     """查看 FASTA 文件的前 N 条序列。"""
     _check_file(file)
     count = 0
     try:
-        for header, seq in parse_fasta(str(file)):
-            if count >= n:
-                break
+        for header, seq in islice(parse_fasta(str(file)), n):
             _print_fasta_record(header, seq, wrap)
             console.print()
             count += 1
@@ -308,9 +313,8 @@ def fqview(
     _check_file(file)
     count = 0
     try:
-        for header, seq, quality in parse_fastq(str(file)):
-            if n > 0 and count >= n:
-                break
+        records = parse_fastq(str(file))
+        for header, seq, quality in (islice(records, n) if n > 0 else records):
 
             count += 1
             seqtype = detect_seq_type(seq)
@@ -320,7 +324,7 @@ def fqview(
             type_label = "DNA" if seqtype == SeqType.DNA else "Protein" if seqtype == SeqType.PROTEIN else "Unknown"
             console.print(
                 f"[bold cyan]▶ Read {count}[/bold cyan] "
-                f"[white]{header}[/white] "
+                f"[white]{escape(header)}[/white] "
                 f"[dim]\\[{type_label}] {len(seq)}bp "
                 f"Q={qstats['mean']:.1f} "
                 f"Q30={qstats['q30_pct']:.0%}[/dim]"
@@ -353,7 +357,7 @@ def fqview(
             console.print()  # read 间空行
     except ValueError as e:
         # 畸形 FASTQ（非 '@' 开头记录/截断等）：友好报错而非裸 traceback
-        console.print(f"[red]错误: {e}[/red]")
+        console.print(f"[red]错误: {escape(str(e))}[/red]")
         raise typer.Exit(code=1) from None
     except OSError as e:
         _read_error_exit(e)
@@ -372,7 +376,7 @@ def browse(
     """交互式浏览 FASTA/FASTQ/VCF 文件（主功能；等价于 seqviz <路径>，保留作兼容别名）。"""
     for p in files:  # 校验路径存在，与其他子命令的友好报错保持一致
         if not p.exists():
-            console.print(f"[red]错误: 路径不存在: {p}[/red]")
+            console.print(f"[red]错误: 路径不存在: {escape(str(p))}[/red]")
             raise typer.Exit(code=1)
         _reject_unsupported(p)
     _launch_browser(list(files))

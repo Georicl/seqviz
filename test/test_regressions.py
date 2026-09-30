@@ -126,6 +126,22 @@ class TestLargeSeqChunking:
         for start in (0, 1000, 600_000, len(seq) - 60):
             assert v._load_chunk(start, start + 60) == seq[start:start + 60]
 
+    def test_unwrapped_then_wrapped_sequence(self, tmp_path):
+        """超长单行后接普通短行，跨越虚拟读取块时仍按真实坐标取序列。"""
+        seq = "ATCG" * 300_000
+        p = tmp_path / "mixed_width.fa"
+        with p.open("w") as f:
+            f.write(">mixed\n")
+            f.write(seq[:1_100_000] + "\n")
+            for i in range(1_100_000, len(seq), 70):
+                f.write(seq[i:i + 70] + "\n")
+
+        v, recs = _view(p, FileFormat.FASTA)
+        v.load_sequence(recs[0])
+        assert v._seq_length == len(seq)
+        for start in (1_099_940, 1_100_000, len(seq) - 60):
+            assert v._load_chunk(start, start + 60) == seq[start:start + 60]
+
     def test_blank_lines_in_record(self, tmp_path):
         """记录内部含空行：长度准确（空行不计），_load_chunk 不错位。"""
         seq = "".join(random.choices("ATCG", k=1_100_000))

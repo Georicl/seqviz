@@ -71,15 +71,16 @@ def count_sequences(path: Path, fmt: FileFormat, cancel_event: threading.Event |
                     if cancel_event is not None and lines % 16384 == 0 and cancel_event.is_set():
                         return count
         elif fmt == FileFormat.FASTQ:
-            # FASTQ: 每 4 行一条记录，数行数除以 4
-            lines = 0
+            # FASTQ: 按记录读取，忽略解析器允许的记录间空行。
             with opener(path, "rb") as f:
-                for _ in f:
-                    lines += 1
-                    # 每 16K 行检查一次取消标志（摊薄开销可忽略）
-                    if cancel_event is not None and lines % 16384 == 0 and cancel_event.is_set():
-                        return lines // 4
-            count = lines // 4
+                while header := f.readline():
+                    if not header.strip():
+                        continue
+                    if not (f.readline() and f.readline() and f.readline()):
+                        break
+                    count += 1
+                    if cancel_event is not None and count % 4096 == 0 and cancel_event.is_set():
+                        return count
         else:
             # FASTA: 数以 '>' 开头的行
             lines = 0

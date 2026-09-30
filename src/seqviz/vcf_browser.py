@@ -52,8 +52,9 @@ _FILTER_CYCLE = ["全部", "PASS", "SNP", "InDel"]
 
 
 def _chrom_sort_key(chrom: str):
-    """数字感知的染色体排序键：chr2 < chr10，非数字段按字典序。"""
-    return tuple(int(p) if p.isdigit() else p for p in re.split(r"(\d+)", chrom))
+    """数字感知排序，并保留原名以区分 chr1 与 chr01 等不同 contig。"""
+    natural = tuple(int(p) if p.isdigit() else p for p in re.split(r"(\d+)", chrom.lower()))
+    return natural, chrom
 
 
 class VariantList(OptionList):
@@ -358,7 +359,7 @@ class VcfBrowser(App):
             self._chrom_keys = {}
         k = self._chrom_keys.get(chrom)
         if k is None:
-            k = self._chrom_keys[chrom] = _chrom_sort_key(chrom.lower())  # 大小写不敏感
+            k = self._chrom_keys[chrom] = _chrom_sort_key(chrom)
         return k
 
     # ── 坐标/范围查找（遗留建议：二分直达坐标） ──
@@ -665,7 +666,7 @@ class VcfBrowser(App):
         txt.append(f"[{_TYPE_LABEL[t]}]", style=f"bold {color}")
         if v.id:
             txt.append(f" {v.id}", style="bold")
-        pass_style = "bold green" if v.filter == "PASS" else "bold red"
+        pass_style = "bold green" if v.filter == "PASS" else "dim" if v.filter == "." else "bold red"
         txt.append(f"   {v.filter}", style=pass_style)
         txt.append("\n\n")
         txt.append("  位置     ", style="dim")
@@ -691,10 +692,11 @@ class VcfBrowser(App):
             for name, raw_gt in v.samples.items():
                 gt = parse_genotype(raw_gt, v.format_fields)
                 gt_s = gt.get("GT", "./.")
-                label = _GT_LABEL.get(gt_s, gt_s)
-                gt_style = _GT_MATRIX_STYLE.get(gt_s, "dim").replace("bold ", "")
+                gt_key = gt_s.replace("|", "/")
+                label = _GT_LABEL.get(gt_key, "")
+                gt_style = _GT_MATRIX_STYLE.get(gt_key, "dim").replace("bold ", "")
                 txt.append(f"  {name:<14}", style="bold")
-                txt.append(f"{gt_s} {label}", style=gt_style)
+                txt.append(f"{gt_s} {label}" if label else gt_s, style=gt_style)
                 if "DP" in gt:
                     txt.append(f"  DP={gt['DP']}", style="dim")
                 if "GQ" in gt:
@@ -702,14 +704,17 @@ class VcfBrowser(App):
                 txt.append("\n")
                 ad = gt.get("AD")
                 if isinstance(ad, list) and ad and sum(ad) > 0:
-                    total = sum(ad)
+                    alt_count = sum(ad[1:])
+                    total = ad[0] + alt_count
                     ref_w = round(ad[0] / total * 20)
+                    if ad[0] > 0 and alt_count > 0:
+                        ref_w = min(max(ref_w, 1), 19)
                     txt.append("               REF ", style="dim")
                     txt.append("▓" * ref_w, style="green")
                     txt.append(f" {ad[0]}\n", style="dim")
                     txt.append("               ALT ", style="dim")
-                    txt.append("▓" * max(20 - ref_w, 1), style="red")
-                    txt.append(f" {sum(ad[1:])}\n", style="dim")
+                    txt.append("▓" * (20 - ref_w), style="red")
+                    txt.append(f" {alt_count}\n", style="dim")
         return txt
 
     def _show_detail(self, list_index: int):
@@ -734,7 +739,10 @@ class VcfBrowser(App):
     # ── 基因型矩阵 ──
     def _build_matrix(self, current_list_index: int = 0) -> Text:
         txt = Text()
-        samples = self.meta.samples or ["sample1"]
+        samples = self.meta.samples
+        if not samples:
+            txt.append("文件不含样本基因型", style="dim")
+            return txt
         name_w = max(len(s) for s in samples) + 2
         txt.append(" " * 24)
         for s in samples:
@@ -750,7 +758,7 @@ class VcfBrowser(App):
             txt.append(f"{v.chrom}:{v.pos:<12}", style="bold" if is_cur else "")
             for s in samples:
                 gt = parse_genotype(v.samples.get(s, "."), v.format_fields).get("GT", "./.")
-                txt.append(f"{gt:>{name_w}}", style=_GT_MATRIX_STYLE.get(gt, "dim"))
+                txt.append(f"{gt:>{name_w}}", style=_GT_MATRIX_STYLE.get(gt.replace("|", "/"), "dim"))
             txt.append("\n")
         txt.append("\n")
         txt.append("  0/0 纯合参考 · 0/1 杂合 · 1/1 纯合变异", style="dim")

@@ -80,7 +80,7 @@ def classify_variant(ref: str, alt: str) -> VariantType:
     符号等位基因（<DEL>/<INS>/*）判为 COMPLEX，避免污染 SNP/InDel 计数与 Ts/Tv。
     """
     first_alt = alt.split(",")[0]
-    if first_alt.startswith("<") or first_alt in ("*", "."):
+    if first_alt.startswith("<") or first_alt in ("*", ".") or "[" in first_alt or "]" in first_alt:
         return VariantType.COMPLEX
     ref_u, alt_u = ref.upper(), first_alt.upper()
     if len(ref) == 1 and len(first_alt) == 1:
@@ -143,6 +143,8 @@ def parse_meta(header_lines: list[str]) -> VcfMeta:
 
 def _parse_info(info_str: str) -> dict:
     """解析 INFO 列：'DP=45;AF=0.333;DB' → {'DP':'45','AF':'0.333','DB':''}。"""
+    if info_str == ".":
+        return {}
     info = {}
     for item in info_str.split(";"):
         if not item:

@@ -2,9 +2,10 @@
 import asyncio
 from pathlib import Path
 
+import pytest
 from textual.widgets import OptionList
 
-from seqviz.vcf import scan_vcf_quick
+from seqviz.vcf import Variant, load_variant_detail, scan_vcf_quick
 from seqviz.vcf_browser import AbsoluteScrollbar, DetailPanel, VcfBrowser
 
 TEST_DIR = Path(__file__).parent
@@ -339,6 +340,27 @@ class TestBatchAppendPositionStability:
                 assert ol.option_count == 18  # 全部补齐
                 assert ol.highlighted == hl_before  # 高亮未被重置
                 app.scanning = False
+        run(_t())
+
+
+class TestScanCacheRefresh:
+    @pytest.mark.parametrize("mode", ["SNP", "QUAL"])
+    def test_new_variants_remain_visible_after_filter_or_sort(self, mode):
+        async def _t():
+            app = VcfBrowser(SAMPLE_VCF)
+            async with app.run_test(size=(120, 30)) as pilot:
+                if mode == "SNP":
+                    await pilot.press("f", "f")
+                else:
+                    await pilot.press("s")
+                await pilot.pause()
+                app.scanning = True
+                new_variant = Variant("chr99", 100, "new", "A", "G", 10, "PASS")
+                app._append_batch([new_variant])
+                app._finish_scan([new_variant], 0)
+                await pilot.pause()
+                assert len(app.variants) - 1 in app.view
+
         run(_t())
 
 
@@ -729,6 +751,80 @@ class TestChromNaturalSort:
                 order = [app.variants[i].chrom for i in app.view]
                 assert order == ["chr1", "chr2", "chr10"]  # 非字典序的 chr1,chr10,chr2
         run(_t())
+
+    def test_coord_search_distinguishes_numeric_name_spellings(self, tmp_path):
+        f = tmp_path / "contigs.vcf"
+        f.write_text(
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+            "chr1\t100\t.\tA\tG\t50\tPASS\t.\n"
+            "chr01\t200\t.\tA\tG\t50\tPASS\t.\n"
+        )
+        app = VcfBrowser(f)
+        li = app._find_coord_in_view("chr01", 1, 300)
+        assert li is not None
+        assert app.variants[app.view[li]].chrom == "chr01"
+
+
+class TestAllelicDepthBar:
+    def test_zero_alt_depth_has_no_alt_bar(self):
+        app = VcfBrowser(SAMPLE_VCF)
+        variant = Variant(
+            "chr1", 100, "", "A", "G", 50, "PASS",
+            format_fields=["GT", "AD"], samples={"sample1": "0/0:20,0"},
+        )
+        alt_line = next(line for line in str(app._build_detail(variant)).splitlines() if "ALT " in line)
+        assert "0" in alt_line
+        assert "▓" not in alt_line
+
+    def test_nonzero_minor_alt_depth_remains_visible(self):
+        app = VcfBrowser(SAMPLE_VCF)
+        variant = Variant(
+            "chr1", 100, "", "A", "G", 50, "PASS",
+            format_fields=["GT", "AD"], samples={"sample1": "0/1:99,1"},
+        )
+        alt_line = next(line for line in str(app._build_detail(variant)).splitlines() if "ALT " in line)
+        assert "▓" in alt_line
+
+
+class TestUnsetFilterDisplay:
+    def test_unapplied_filter_is_not_marked_failed(self):
+        app = VcfBrowser(SAMPLE_VCF)
+        variant = Variant("chr1", 100, "", "A", "G", 50, ".")
+        detail = app._build_detail(variant)
+        assert any(
+            span.style == "dim" and detail.plain[span.start:span.end].strip() == "."
+            for span in detail.spans
+        )
+
+
+class TestSamplelessMatrix:
+    def test_no_phantom_sample_column(self, tmp_path):
+        f = tmp_path / "sites_only.vcf"
+        f.write_text(
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+            "chr1\t100\t.\tA\tG\t50\tPASS\t.\n"
+        )
+        app = VcfBrowser(f)
+        matrix = str(app._build_matrix())
+        assert "文件不含样本基因型" in matrix
+        assert "sample1" not in matrix
+
+
+class TestPhasedGenotypeDisplay:
+    def test_phased_heterozygote_uses_heterozygote_label_and_color(self, tmp_path):
+        f = tmp_path / "phased.vcf"
+        f.write_text(
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\n"
+            "chr1\t100\t.\tA\tG\t50\tPASS\t.\tGT\t0|1\n"
+        )
+        app = VcfBrowser(f)
+        variant = load_variant_detail(f, app.variants[0], ["s1"])
+        assert "0|1 杂合" in str(app._build_detail(variant))
+        matrix = app._build_matrix()
+        assert any(
+            span.style == "yellow" and "0|1" in matrix.plain[span.start:span.end]
+            for span in matrix.spans
+        )
 
 
 # ──────────────────────────────────────────────

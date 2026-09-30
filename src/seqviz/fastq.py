@@ -39,4 +39,12 @@ def parse_fastq(filepath: str | Path) -> Generator[tuple[str, str, str]]:
             if not quality:
                 raise ValueError(f"FASTQ 格式错误: 记录 {header_line[1:]!r} 缺少质量行（文件截断）")
 
-            yield header_line[1:], seq.rstrip("\n"), quality.rstrip("\n")
+            seq = seq.rstrip("\n")
+            quality = quality.rstrip("\n")
+            if len(seq) != len(quality):
+                raise ValueError(
+                    f"FASTQ 格式错误: 记录 {header_line[1:]!r} 的序列长度 "
+                    f"{len(seq)} 与质量值长度 {len(quality)} 不一致"
+                )
+
+            yield header_line[1:], seq, quality

@@ -40,6 +40,13 @@ class TestViewCommand:
         result = runner.invoke(app, ["view", TEST_FA, "--wrap", "0"])
         assert result.exit_code != 0
 
+    def test_header_with_rich_markup_is_literal(self, tmp_path):
+        p = tmp_path / "markup.fa"
+        p.write_text(">x[/bold cyan]\nACGT\n")
+        result = runner.invoke(app, ["view", str(p)])
+        assert result.exit_code == 0
+        assert "x[/bold cyan]" in result.output
+
 
 class TestHeadCommand:
     def test_head_limits_count(self):
@@ -53,6 +60,22 @@ class TestHeadCommand:
         assert result.exit_code == 0
         assert "共显示" in result.output
 
+    def test_head_does_not_read_next_record(self, monkeypatch):
+        import seqviz.cli as cli_mod
+
+        def records(_):
+            yield "first", "ACGT"
+            raise AssertionError("second record was read")
+
+        monkeypatch.setattr(cli_mod, "parse_fasta", records)
+        result = runner.invoke(app, ["head", TEST_FA, "-n", "1"])
+        assert result.exit_code == 0
+        assert "first" in result.output
+
+    def test_head_zero_rejected(self):
+        result = runner.invoke(app, ["head", TEST_FA, "-n", "0"])
+        assert result.exit_code != 0
+
 
 class TestStatsCommand:
     def test_stats_outputs_table(self):
@@ -65,6 +88,13 @@ class TestStatsCommand:
     def test_stats_correct_count(self):
         result = runner.invoke(app, ["stats", TEST_FA])
         assert "2" in result.output  # 2 条序列
+
+    def test_stats_title_keeps_brackets_in_filename(self, tmp_path):
+        p = tmp_path / "x[red].fa"
+        p.write_text(">r\nACGT\n")
+        result = runner.invoke(app, ["stats", str(p)])
+        assert result.exit_code == 0
+        assert "[red]" in "".join(result.output.split())
 
 
 class TestFqviewCommand:
@@ -83,6 +113,20 @@ class TestFqviewCommand:
         result = runner.invoke(app, ["fqview", TEST_FASTQ, "-n", "1"])
         assert result.exit_code == 0
         assert "Read 2" not in result.output
+
+    def test_header_with_rich_markup_is_literal(self, tmp_path):
+        p = tmp_path / "markup.fastq"
+        p.write_text("@x[/white]\nAC\n+\nII\n")
+        result = runner.invoke(app, ["fqview", str(p)])
+        assert result.exit_code == 0
+        assert "x[/white]" in result.output
+
+    def test_limit_does_not_parse_next_bad_record(self, tmp_path):
+        p = tmp_path / "first_only.fastq"
+        p.write_text("@good\nAC\n+\nII\n@bad\nAC\nNOT_PLUS\nII\n")
+        result = runner.invoke(app, ["fqview", str(p), "-n", "1"])
+        assert result.exit_code == 0
+        assert "good" in result.output
 
 
 class TestConfigCommand:
@@ -129,6 +173,13 @@ class TestBrowseCommand:
         result = runner.invoke(app, ["browse", "nonexistent_file.fa"])
         assert result.exit_code != 0
         assert "路径不存在" in result.output
+
+    def test_browse_invalid_fastq_is_friendly_error(self, tmp_path):
+        p = tmp_path / "invalid.fastq"
+        p.write_text("@r\nACGT\nNOT_PLUS\nIIII\n")
+        result = runner.invoke(app, ["browse", str(p)])
+        assert result.exit_code == 1
+        assert "缺少 '+' 分隔符" in result.output
 
     def test_browse_happy_path_passes_paths(self, monkeypatch):
         """browse 正常入口：路径列表传入 FastaBrowser 并启动。"""

@@ -7,6 +7,7 @@ from seqviz.browser import FileFormat
 from seqviz.file_browser import (
     FileBrowser,
     FileInfo,
+    count_sequences,
     detect_file_format,
     format_size,
     is_sequence_file,
@@ -106,6 +107,11 @@ class TestScanDirectory:
         assert format_size(1500) == "1.5K"
         assert format_size(1_500_000) == "1.5M"
         assert format_size(1_500_000_000) == "1.5G"
+
+    def test_fastq_count_ignores_record_separators(self, tmp_path):
+        p = tmp_path / "reads.fastq"
+        p.write_text("\n\n".join(f"@r{i}\nAC\n+\nII" for i in range(5)) + "\n")
+        assert count_sequences(p, FileFormat.FASTQ) == 5
 
 
 # ──────────────────────────────────────────────

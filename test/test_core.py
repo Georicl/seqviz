@@ -95,6 +95,12 @@ class TestParseFastq:
         _, seq, qual = list(parse_fastq(p))[0]
         assert len(seq) == len(qual)
 
+    def test_quality_length_mismatch_raises(self, tmp_path):
+        p = tmp_path / "short_quality.fq"
+        p.write_text("@r\nATCG\n+\nII\n")
+        with pytest.raises(ValueError, match="长度.*不一致"):
+            list(parse_fastq(p))
+
     def test_empty_file(self, tmp_path):
         p = tmp_path / "empty.fq"
         p.write_text("")
