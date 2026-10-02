@@ -33,6 +33,7 @@ class SequenceView(Static):
         self._lines_per_chunk = 1
 
     def on_unmount(self):
+        # Textual 先卸载子组件，文件句柄在组件自身的生命周期结束时关闭。
         self.reader.close()
 
     def load_sequence(self, seq_info: SequenceInfo, defer_metrics: bool = False):
