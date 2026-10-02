@@ -6,11 +6,11 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from seqviz import config as config_mod
-from seqviz import theme as theme_mod
 from seqviz.cli import app
+from seqviz.ui import theme as theme_mod
 
 runner = CliRunner()
-TEST_DIR = Path(__file__).parent
+TEST_DIR = Path(__file__).resolve().parents[1] / "data"
 TEST_FA = str(TEST_DIR / "test.fa")
 TEST_FASTQ = str(TEST_DIR / "test_fastq.fastq")
 
@@ -78,6 +78,16 @@ class TestHeadCommand:
 
 
 class TestStatsCommand:
+    def test_stats_ignores_sequence_line_padding(self, tmp_path):
+        p = tmp_path / "padded.fa"
+        p.write_text(">s\n  ACGT\n  GGCC\n")
+        result = runner.invoke(app, ["stats", str(p)])
+        assert result.exit_code == 0
+        rows = result.output.splitlines()
+        assert any("总长度" in row and "8" in row for row in rows)
+        assert any("N50" in row and "8" in row for row in rows)
+        assert "75.00%" in result.output
+
     def test_stats_outputs_table(self):
         result = runner.invoke(app, ["stats", TEST_FA])
         assert result.exit_code == 0
@@ -184,6 +194,7 @@ class TestBrowseCommand:
     def test_browse_happy_path_passes_paths(self, monkeypatch):
         """browse 正常入口：路径列表传入 FastaBrowser 并启动。"""
         import seqviz.cli as cli_mod
+
         captured: dict = {}
 
         def fake_run(self):
@@ -197,7 +208,8 @@ class TestBrowseCommand:
     def test_browse_vcf_routes_to_vcf_browser(self, monkeypatch):
         """browse 单个 .vcf 应路由到 VcfBrowser 而非 FastaBrowser。"""
         import seqviz.cli as cli_mod
-        from seqviz import vcf_browser as vcf_browser_mod
+        from seqviz.ui.variants import app as vcf_browser_mod
+
         called: dict = {}
 
         def fake_vcf_run(self):
@@ -208,22 +220,11 @@ class TestBrowseCommand:
 
         monkeypatch.setattr(vcf_browser_mod.VcfBrowser, "run", fake_vcf_run)
         monkeypatch.setattr(cli_mod.FastaBrowser, "run", fake_fasta_run)
-        vcf_path = str(Path(__file__).parent / "sample.vcf")
+        vcf_path = str((Path(__file__).resolve().parents[1] / "data") / "sample.vcf")
         result = runner.invoke(app, ["browse", vcf_path])
         assert result.exit_code == 0
         assert called.get("vcf") == vcf_path
         assert "fasta" not in called
-
-    def test_is_vcf_helper(self, tmp_path):
-        """_is_vcf 辅助函数：后缀判定（大小写不敏感），不存在/非文件为 False。"""
-        from seqviz.cli import _is_vcf
-        f = tmp_path / "x.VCF"
-        f.write_text("")
-        assert _is_vcf(f) is True
-        fa = tmp_path / "x.fa"
-        fa.write_text("")
-        assert _is_vcf(fa) is False
-        assert _is_vcf(tmp_path / "missing.vcf") is False
 
     def test_browse_empty_vcf_friendly_error(self, tmp_path):
         """空 VCF：友好报错并非零退出（对齐现有空文件策略）。"""
@@ -244,10 +245,13 @@ class TestBrowseCommand:
     def test_browse_vcf_gz_rejected(self, tmp_path):
         """压缩 VCF（.vcf.gz）应友好报错，而非静默按 FASTA 解析打开空界面。"""
         import gzip
+
         f = tmp_path / "x.vcf.gz"
         with gzip.open(f, "wt") as fh:
-            fh.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
-                     "chr1\t1\t.\tA\tG\t50\tPASS\t.\n")
+            fh.write(
+                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+                "chr1\t1\t.\tA\tG\t50\tPASS\t.\n"
+            )
         result = runner.invoke(app, ["browse", str(f)])
         assert result.exit_code == 1
         assert "压缩 VCF" in result.output
@@ -265,11 +269,14 @@ class TestBrowseCommand:
     def test_browse_mixed_vcf_and_fasta_skips_vcf(self, tmp_path, monkeypatch):
         """VCF 与序列文件混合打开：VCF 被剥离并提示，FastaBrowser 只收到序列文件。"""
         import seqviz.cli as cli_mod
+
         fa = tmp_path / "x.fa"
         fa.write_text(">s1\nATCG\n")
         vcf = tmp_path / "x.vcf"
-        vcf.write_text("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
-                       "chr1\t1\t.\tA\tG\t50\tPASS\t.\n")
+        vcf.write_text(
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+            "chr1\t1\t.\tA\tG\t50\tPASS\t.\n"
+        )
         captured: dict = {}
 
         def fake_fasta_run(self):
@@ -289,6 +296,7 @@ class TestDefaultBrowseRouting:
     def test_path_without_subcommand_opens_browser(self, monkeypatch):
         """seqviz test.fa ≡ seqviz browse test.fa（主功能直达）。"""
         import seqviz.cli as cli_mod
+
         captured: dict = {}
 
         def fake_run(self):
@@ -308,15 +316,18 @@ class TestDefaultBrowseRouting:
     def test_vcf_without_subcommand_routes_to_vcf_browser(self, monkeypatch):
         """seqviz x.vcf 直接路由到 VcfBrowser。"""
         import seqviz.cli as cli_mod
-        from seqviz import vcf_browser as vcf_browser_mod
+        from seqviz.ui.variants import app as vcf_browser_mod
+
         called: dict = {}
 
         def fake_vcf_run(self):
             called["vcf"] = str(self.filepath)
 
         monkeypatch.setattr(vcf_browser_mod.VcfBrowser, "run", fake_vcf_run)
-        monkeypatch.setattr(cli_mod.FastaBrowser, "run", lambda self: called.__setitem__("fasta", True))
-        vcf_path = str(Path(__file__).parent / "sample.vcf")
+        monkeypatch.setattr(
+            cli_mod.FastaBrowser, "run", lambda self: called.__setitem__("fasta", True)
+        )
+        vcf_path = str((Path(__file__).resolve().parents[1] / "data") / "sample.vcf")
         result = runner.invoke(app, [vcf_path])
         assert result.exit_code == 0
         assert called.get("vcf") == vcf_path
@@ -325,6 +336,7 @@ class TestDefaultBrowseRouting:
     def test_no_args_opens_current_directory(self, monkeypatch):
         """seqviz 不带参数：默认打开当前目录文件浏览器。"""
         import seqviz.cli as cli_mod
+
         captured: dict = {}
 
         def fake_launch(paths):
@@ -367,7 +379,8 @@ class TestHelpCommand:
 class TestN50Value:
     def test_n50_numeric_correctness(self):
         """N50 数值正确性（回归：此前仅字符串存在断言）。"""
-        from seqviz.stats import calc_n50
+        from seqviz.core.stats import calc_n50
+
         # 长度 [20, 12]，总长 32，半值 16；降序累计 20 >= 16 → N50 = 20
         assert calc_n50([20, 12], 32) == 20
         # [100, 50, 30, 20] 总长 200，半值 100；累计 100 >= 100 → N50 = 100

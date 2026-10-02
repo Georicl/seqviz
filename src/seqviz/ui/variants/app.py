@@ -1,9 +1,5 @@
-"""VCF 交互式浏览器 — 双栏：左变异列表 + 右详情/基因型矩阵。
+"""VCF 双栏浏览器：协调扫描、筛选、导航和详情展示。"""
 
-设计文档: docs/superpowers/specs/2026-07-25-vcf-visualization-design.md
-"""
-
-import re
 from collections.abc import Sequence
 from functools import partial
 from itertools import pairwise
@@ -12,17 +8,15 @@ from pathlib import Path
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
-from textual.screen import ModalScreen
-from textual.widget import Widget
+from textual.containers import Horizontal
 from textual.widgets import Footer, Header, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from seqviz import clipboard
-from seqviz import theme as theme_mod
-from seqviz.vcf import (
+from seqviz.core.vcf import (
     Variant,
     VariantType,
+    chrom_sort_key,
     classify_variant,
     compute_stats,
     load_variant_detail,
@@ -30,6 +24,13 @@ from seqviz.vcf import (
     parse_genotype,
     scan_vcf,
     scan_vcf_resume,
+)
+from seqviz.ui import theme as theme_mod
+from seqviz.ui.variants.widgets import (
+    AbsoluteScrollbar,
+    DetailPanel,
+    HelpScreen,
+    VariantList,
 )
 
 _TYPE_SYMBOL = {
@@ -49,188 +50,6 @@ _TYPE_LABEL = {
 _GT_LABEL = {"0/0": "纯合参考", "0/1": "杂合", "1/0": "杂合", "1/1": "纯合变异"}
 _GT_MATRIX_STYLE = {"0/0": "dim", "0/1": "yellow", "1/0": "yellow", "1/1": "bold red"}
 _FILTER_CYCLE = ["全部", "PASS", "SNP", "InDel"]
-
-
-def _chrom_sort_key(chrom: str):
-    """数字感知排序，并保留原名以区分 chr1 与 chr01 等不同 contig。"""
-    natural = tuple(int(p) if p.isdigit() else p for p in re.split(r"(\d+)", chrom.lower()))
-    return natural, chrom
-
-
-class VariantList(OptionList):
-    """大列表窗口化下的滚轮语义修正。
-
-    默认滚轮只在物化的 WINDOW 条缓冲内滚动视口（不移动选中项），
-    与“选中项 = 浏览位置”的模型矛盾；改为滚轮直接移动位置，窗口随之平移。
-    小列表（全量物化，有滚动条）保持原生滚动行为。
-    """
-
-    def scroll_down(self, animate: bool = True) -> None:
-        app = self.app
-        if isinstance(app, VcfBrowser) and len(app.view) > app.WINDOW:
-            app._goto_abs(app._abs_index() + 3)
-        else:
-            super().scroll_down(animate)
-
-    def scroll_up(self, animate: bool = True) -> None:
-        app = self.app
-        if isinstance(app, VcfBrowser) and len(app.view) > app.WINDOW:
-            app._goto_abs(app._abs_index() - 3)
-        else:
-            super().scroll_up(animate)
-
-
-class AbsoluteScrollbar(Widget):
-    """真实比例滚动条：映射全量 view 的绝对位置（窗口化大列表专用）。
-
-    OptionList 原生滚动条只代表物化的 WINDOW 条缓冲（虚假的“拖到底=全部末尾”）；
-    本控件滑块位置/长度按 当前位置/窗口占比 映射全量 view，点击/拖拽直达。
-    """
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._dragging = False
-
-    def render(self):
-        app = self.app
-        h = self.size.height
-        txt = Text()
-        if not isinstance(app, VcfBrowser) or h <= 0 or len(app.view) <= app.WINDOW:
-            return txt
-        n = len(app.view)
-        thumb_h = max(1, round(h * min(app.WINDOW, n) / n))
-        track = h - thumb_h
-        frac = app._abs_index() / max(n - 1, 1)
-        thumb_start = round(frac * track)
-        for row in range(h):
-            if thumb_start <= row < thumb_start + thumb_h:
-                txt.append("█")
-            else:
-                txt.append("░", style="dim")
-            if row < h - 1:
-                txt.append("\n")
-        return txt
-
-    def _jump_to(self, y: int):
-        app = self.app
-        if not isinstance(app, VcfBrowser) or not app.view:
-            return
-        h = max(self.size.height, 1)
-        frac = min(max(y / h, 0.0), 1.0)
-        app._goto_abs(int(frac * (len(app.view) - 1)))
-
-    def on_mouse_down(self, event) -> None:
-        self._dragging = True
-        self.capture_mouse()
-        self._jump_to(event.y)
-        event.stop()
-
-    def on_mouse_move(self, event) -> None:
-        if self._dragging:
-            self._jump_to(event.y)
-            event.stop()
-
-    def on_mouse_up(self, event) -> None:
-        if self._dragging:
-            self._dragging = False
-            event.stop()
-
-
-class HelpScreen(ModalScreen):
-    """帮助面板：显示所有快捷键。"""
-
-    CSS = """
-    HelpScreen {
-        align: center middle;
-    }
-    #help-panel {
-        width: 62;
-        height: auto;
-        border: thick $accent;
-        padding: 1 2;
-    }
-    """
-
-    BINDINGS: Sequence[Binding] = [
-        Binding("question_mark", "dismiss", "关闭"),
-        Binding("escape", "dismiss", "关闭"),
-        Binding("q", "dismiss", "关闭"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        yield Static(id="help-panel")
-
-    def on_mount(self):
-        panel = self.query_one("#help-panel", Static)
-        panel.border_title = "Seqviz VCF — 快捷键"
-        text = Text()
-        rows = [
-            ("j / k", "上下移动（右侧聚焦时滚动详情）"), ("n / p", "下/上一条变异"),
-            ("g / G", "顶部 / 底部"),
-            ("/", "搜索: ID / chr:pos / chr:a-b"), ("f", "过滤循环 (全部/PASS/SNP/InDel)"),
-            ("s", "排序切换 (位置/QUAL)"), ("t", "详情 ↔ 基因型矩阵"),
-            ("Tab / Esc", "左侧列表 ↔ 右侧详情面板"),
-            ("i", "文件信息"), ("y", "复制当前 VCF 行"),
-            ("?", "帮助"), ("q", "退出"),
-        ]
-        for key, desc in rows:
-            text.append(f"{key:<14}", style="bold green")
-            text.append(desc + "\n")
-        panel.update(text)
-
-
-class DetailPanel(VerticalScroll, can_focus=True):
-    """右侧详情/基因型矩阵面板：内容超出可视区域时可滚动浏览。
-
-    内部 #detail-content 承载渲染文本（height:auto 撑开虚拟高度，容器滚动）。
-    Tab 聚焦后 ↑↓ / PageUp/PageDown / g/G 滚动内容（j/k 由 App
-    优先绑定委托；n/p 始终为变异级导航）；Esc 返回左侧变异列表。未聚焦时不拦截任何按键，
-    左侧列表的导航/搜索/过滤/排序/复制行为完全不变。
-    """
-
-    BINDINGS: Sequence[Binding] = [
-        Binding("down", "detail_down", "详情下滚", show=False),
-        Binding("up", "detail_up", "详情上滚", show=False),
-        Binding("pageup", "detail_page_up", "上翻页", show=False),
-        Binding("pagedown", "detail_page_down", "下翻页", show=False),
-        Binding("g", "detail_home", "详情顶部", show=False),
-        Binding("G", "detail_end", "详情底部", show=False),
-        Binding("escape", "back_to_list", "返回列表", show=False),
-    ]
-
-    STEP = 3  # 每次 j/k/↑/↓ 滚动行数（与滚轮默认步幅一致）
-
-    def compose(self) -> ComposeResult:
-        yield Static("", id="detail-content")
-
-    def content(self) -> Static:
-        return self.query_one("#detail-content", Static)
-
-    def set_content(self, renderable) -> None:
-        """更新内容并回到顶部（切换变异/视图时调用）。"""
-        self.content().update(renderable)
-        self.scroll_home(animate=False)
-
-    def action_detail_down(self):
-        self.scroll_relative(0, self.STEP, animate=False)
-
-    def action_detail_up(self):
-        self.scroll_relative(0, -self.STEP, animate=False)
-
-    def action_detail_page_down(self):
-        self.scroll_relative(0, self.size.height, animate=False)
-
-    def action_detail_page_up(self):
-        self.scroll_relative(0, -self.size.height, animate=False)
-
-    def action_detail_home(self):
-        self.scroll_home(animate=False)
-
-    def action_detail_end(self):
-        self.scroll_end(animate=False)
-
-    def action_back_to_list(self):
-        self.app.query_one("#variant-list", OptionList).focus()
 
 
 class VcfBrowser(App):
@@ -274,17 +93,19 @@ class VcfBrowser(App):
             self.meta, self.variants, self.skipped = scanned
         else:
             self.meta, self.variants, self.skipped = scan_vcf(filepath)
-        self._fh = None             # 详情回读复用句柄（二进制）
-        self._order_dirty = False   # 后台扫描破坏坐标序时置位，下次过滤/排序前重建
-        self._view_dirty = False    # 扫描中用户改过过滤/排序，完成后重建 view
-        self._initial_count = 0     # 快扫初始条数（续扫对账基准）
+        self._fh = None  # 详情回读复用句柄（二进制）
+        self._order_dirty = False  # 后台扫描破坏坐标序时置位，下次过滤/排序前重建
+        self._view_dirty = False  # 扫描中用户改过过滤/排序，完成后重建 view
+        self._initial_count = 0  # 快扫初始条数（续扫对账基准）
         self.view: list[int] = list(range(len(self.variants)))  # 过滤/排序后的下标映射
         self._chrom_keys: dict[str, tuple] | None = None  # 数字感知染色体键缓存
-        self._qual_order: list[int] | None = None         # 全局 QUAL 降序（首次 s 键懒计算）
-        self._types: list[VariantType] | None = None      # 变异类型缓存（SNP/InDel 过滤时懒计算）
-        self._stats_token = 0                             # 异步统计的版本号（防竞态）
+        self._qual_order: list[int] | None = None  # 全局 QUAL 降序（首次 s 键懒计算）
+        self._types: list[VariantType] | None = (
+            None  # 变异类型缓存（SNP/InDel 过滤时懒计算）
+        )
+        self._stats_token = 0  # 异步统计的版本号（防竞态）
         # 默认按位置排序：VCF 通常已按坐标排序（O(n) 校验快路径），否则全量排序一次并缓存。
-        # 后续过滤在有序列表上做保序筛选，不再重复排序（5M 级免冻结的关键）。
+        # 后续过滤在缓存的位置序上保序筛选。
         self._scan_sorted = self._check_scan_sorted()
         if self._scan_sorted:
             self._pos_order = list(self.view)
@@ -330,17 +151,19 @@ class VcfBrowser(App):
                 self.call_from_thread(self._append_batch, batch)
             except RuntimeError:
                 raise StopIteration
-            _time.sleep(0.02)  # 让出 GIL，保证 UI 线程滚动流畅
+            _time.sleep(0.02)  # 让出 GIL，给 UI 线程处理事件
+
         try:
             new_all, skipped_add = scan_vcf_resume(
-                self.filepath, self._cont_offset, on_batch=_dispatch)
+                self.filepath, self._cont_offset, on_batch=_dispatch
+            )
         except StopIteration:
             return  # 应用已关闭，正常退出
         except Exception as exc:  # noqa: BLE001
-            # 通知用户扫描失败，而非静默吞掉异常
             try:
                 self.call_from_thread(
-                    self.notify, f"后台扫描失败: {exc}", title="VCF", severity="error")
+                    self.notify, f"后台扫描失败: {exc}", title="VCF", severity="error"
+                )
             except RuntimeError:
                 pass  # 应用已退出
             return
@@ -359,10 +182,10 @@ class VcfBrowser(App):
             self._chrom_keys = {}
         k = self._chrom_keys.get(chrom)
         if k is None:
-            k = self._chrom_keys[chrom] = _chrom_sort_key(chrom)
+            k = self._chrom_keys[chrom] = chrom_sort_key(chrom)
         return k
 
-    # ── 坐标/范围查找（遗留建议：二分直达坐标） ──
+    # ── 坐标/范围查找 ──
     def _bisect_view(self, target_key: tuple, pos: int) -> int:
         """在位置有序的 view 上二分：返回第一个 (染色体键, 坐标) >= (target_key, pos) 的下标。
 
@@ -378,7 +201,9 @@ class VcfBrowser(App):
                 hi = mid
         return lo
 
-    def _find_coord_in_view(self, chrom: str, start: int, end: int | None) -> int | None:
+    def _find_coord_in_view(
+        self, chrom: str, start: int, end: int | None
+    ) -> int | None:
         """在 view 中找第一个 chrom 匹配且 pos ∈ [start, end] 的绝对下标。
 
         位置排序模式二分 O(log n)；其他排序模式（如 QUAL）线性扫描。
@@ -388,14 +213,20 @@ class VcfBrowser(App):
             lo = self._bisect_view(target_key, start)
             if lo < len(self.view):
                 v = self.variants[self.view[lo]]
-                if (self._chrom_key_of(v.chrom) == target_key and v.pos >= start
-                        and (end is None or v.pos <= end)):
+                if (
+                    self._chrom_key_of(v.chrom) == target_key
+                    and v.pos >= start
+                    and (end is None or v.pos <= end)
+                ):
                     return lo
             return None
         for li, vi in enumerate(self.view):
             v = self.variants[vi]
-            if (self._chrom_key_of(v.chrom) == target_key and v.pos >= start
-                    and (end is None or v.pos <= end)):
+            if (
+                self._chrom_key_of(v.chrom) == target_key
+                and v.pos >= start
+                and (end is None or v.pos <= end)
+            ):
                 return li
         return None
 
@@ -446,7 +277,11 @@ class VcfBrowser(App):
             self._pos_order.extend(new_idxs)
         else:
             self._order_dirty = True
-        default_view = (self.filter_mode == "全部" and self.sort_mode == "位置" and not self._order_dirty)
+        default_view = (
+            self.filter_mode == "全部"
+            and self.sort_mode == "位置"
+            and not self._order_dirty
+        )
         if default_view:
             self.view.extend(new_idxs)
         else:
@@ -456,8 +291,7 @@ class VcfBrowser(App):
     def _extend_and_sync(self, batch: list[Variant]) -> bool:
         """追加索引数据，按需增量延展列表窗口。
 
-        永不 clear 重建：clear_options 会重置滚动状态，导致用户视角周期性跳顶；
-        仅当窗口贴着数据尾部且未填满时才 add_options 增量补充。
+        保留现有窗口与选中项，仅当窗口贴着数据尾部且未填满时追加选项。
         """
         ol = self.query_one("#variant-list", OptionList)
         window_at_tail = self._win_start + ol.option_count >= len(self.view)
@@ -465,10 +299,12 @@ class VcfBrowser(App):
         if default_view and window_at_tail and ol.option_count < self.WINDOW:
             start_new = len(self.view) - len(batch)
             room = self.WINDOW - ol.option_count
-            ol.add_options([
-                self._make_option(self.variants[i])
-                for i in range(start_new, min(start_new + room, len(self.view)))
-            ])
+            ol.add_options(
+                [
+                    self._make_option(self.variants[i])
+                    for i in range(start_new, min(start_new + room, len(self.view)))
+                ]
+            )
         return default_view
 
     def _append_batch(self, batch: list[Variant]):
@@ -499,10 +335,7 @@ class VcfBrowser(App):
         self.notify(f"扫描完成，共 {len(self.variants):,} 条变异", title="VCF")
 
     def _sync_scrollbar(self):
-        """滚动策略：小列表用 OptionList 原生滚动条；
-        大列表（>WINDOW）隐藏原生滚动条（它只代表 400 条缓冲，是虚假表示），
-        改用 AbsoluteScrollbar 真实比例映射全量 view。
-        """
+        """小列表使用原生滚动条，大列表使用映射全量 view 的滚动条。"""
         ol = self.query_one("#variant-list", OptionList)
         ol.show_scrollbar = len(self.view) <= self.WINDOW
         sb = self.query_one("#abs-scrollbar", AbsoluteScrollbar)
@@ -540,8 +373,10 @@ class VcfBrowser(App):
         for v in self.variants:
             ck = key_cache.get(v.chrom)
             if ck is None:
-                ck = key_cache[v.chrom] = _chrom_sort_key(v.chrom)
-            if prev_key is not None and (ck < prev_key or (ck == prev_key and v.pos < prev_pos)):
+                ck = key_cache[v.chrom] = chrom_sort_key(v.chrom)
+            if prev_key is not None and (
+                ck < prev_key or (ck == prev_key and v.pos < prev_pos)
+            ):
                 return False
             prev_key, prev_pos = ck, v.pos
         self._chrom_keys = key_cache
@@ -549,10 +384,8 @@ class VcfBrowser(App):
 
     def _pos_key(self, i: int):
         """位置排序键（染色体键缓存，避免重复正则）。"""
-        if self._chrom_keys is None:
-            self._chrom_keys = {c: _chrom_sort_key(c) for c in {v.chrom for v in self.variants}}
         v = self.variants[i]
-        return (self._chrom_keys[v.chrom], v.pos)
+        return (self._chrom_key_of(v.chrom), v.pos)
 
     def _match_filter(self, i: int) -> bool:
         """当前过滤模式是否命中第 i 条变异（全部模式不调用）。"""
@@ -579,9 +412,12 @@ class VcfBrowser(App):
             if self._qual_order is None:
                 # 首次全局 QUAL 降序（缺失排最后），后续过滤直接复用
                 order = list(range(len(self.variants)))
-                order.sort(key=lambda i: (
-                    self.variants[i].qual is None,
-                    -(self.variants[i].qual or 0.0)))
+                order.sort(
+                    key=lambda i: (
+                        self.variants[i].qual is None,
+                        -(self.variants[i].qual or 0.0),
+                    )
+                )
                 self._qual_order = order
             base = self._qual_order
         else:
@@ -614,7 +450,9 @@ class VcfBrowser(App):
         else:
             summary = f"{v.ref}→{v.alt}"
         line.append(f"{summary:<8}")
-        line.append(f"{v.qual:>6.1f}" if v.qual is not None else "     -", style=row_style)
+        line.append(
+            f"{v.qual:>6.1f}" if v.qual is not None else "     -", style=row_style
+        )
         return Option(line)
 
     def _refresh_list(self):
@@ -633,12 +471,16 @@ class VcfBrowser(App):
         self._win_start = max(0, min(win_start, len(self.view)))
         ol = self.query_one("#variant-list", OptionList)
         ol.clear_options()
-        ol.add_options([
-            self._make_option(self.variants[i])
-            for i in self.view[self._win_start:self._win_start + self.WINDOW]
-        ])
+        ol.add_options(
+            [
+                self._make_option(self.variants[i])
+                for i in self.view[self._win_start : self._win_start + self.WINDOW]
+            ]
+        )
         if ol.option_count:
-            ol.highlighted = max(0, min(highlight_abs - self._win_start, ol.option_count - 1))
+            ol.highlighted = max(
+                0, min(highlight_abs - self._win_start, ol.option_count - 1)
+            )
 
     def _abs_index(self) -> int:
         """当前高亮项在 view 中的绝对下标。"""
@@ -652,9 +494,13 @@ class VcfBrowser(App):
         target = max(0, min(target, len(self.view) - 1))
         materialized = min(self.WINDOW, len(self.view) - self._win_start)
         if self._win_start <= target < self._win_start + materialized:
-            self.query_one("#variant-list", OptionList).highlighted = target - self._win_start
+            self.query_one("#variant-list", OptionList).highlighted = (
+                target - self._win_start
+            )
         else:
-            new_start = min(max(target - self.WINDOW // 2, 0), max(0, len(self.view) - self.WINDOW))
+            new_start = min(
+                max(target - self.WINDOW // 2, 0), max(0, len(self.view) - self.WINDOW)
+            )
             self._rebuild_window(new_start, target)
 
     # ── 详情渲染 ──
@@ -666,7 +512,13 @@ class VcfBrowser(App):
         txt.append(f"[{_TYPE_LABEL[t]}]", style=f"bold {color}")
         if v.id:
             txt.append(f" {v.id}", style="bold")
-        pass_style = "bold green" if v.filter == "PASS" else "dim" if v.filter == "." else "bold red"
+        pass_style = (
+            "bold green"
+            if v.filter == "PASS"
+            else "dim"
+            if v.filter == "."
+            else "bold red"
+        )
         txt.append(f"   {v.filter}", style=pass_style)
         txt.append("\n\n")
         txt.append("  位置     ", style="dim")
@@ -752,13 +604,20 @@ class VcfBrowser(App):
         end = min(start + 21, len(self.view))
         for li in range(start, end):
             v = self.variants[self.view[li]]
-            load_variant_detail(self.filepath, v, self.meta.samples, fh=self._detail_fh())
+            load_variant_detail(
+                self.filepath, v, self.meta.samples, fh=self._detail_fh()
+            )
             is_cur = li == current_list_index
             txt.append("▶ " if is_cur else "  ", style="bold green" if is_cur else "")
             txt.append(f"{v.chrom}:{v.pos:<12}", style="bold" if is_cur else "")
             for s in samples:
-                gt = parse_genotype(v.samples.get(s, "."), v.format_fields).get("GT", "./.")
-                txt.append(f"{gt:>{name_w}}", style=_GT_MATRIX_STYLE.get(gt.replace("|", "/"), "dim"))
+                gt = parse_genotype(v.samples.get(s, "."), v.format_fields).get(
+                    "GT", "./."
+                )
+                txt.append(
+                    f"{gt:>{name_w}}",
+                    style=_GT_MATRIX_STYLE.get(gt.replace("|", "/"), "dim"),
+                )
             txt.append("\n")
         txt.append("\n")
         txt.append("  0/0 纯合参考 · 0/1 杂合 · 1/1 纯合变异", style="dim")
@@ -782,16 +641,16 @@ class VcfBrowser(App):
                 parts += f" │ 跳过 {self.skipped} 行畸形数据"
             self.query_one("#status-bar", Static).update(Text(parts))
             return
-        parts = (
-            f" {len(self.view):,} 变异 │ [过滤:{self.filter_mode}] [排序:{self.sort_mode}] │ 统计中…"
-        )
+        parts = f" {len(self.view):,} 变异 │ [过滤:{self.filter_mode}] [排序:{self.sort_mode}] │ 统计中…"
         if self.skipped:
             parts += f" │ 跳过 {self.skipped} 行畸形数据"
         self.query_one("#status-bar", Static).update(Text(parts))
         self._stats_token += 1
         token = self._stats_token
         snapshot = list(self.view)
-        self.run_worker(partial(self._stats_worker, token, snapshot), thread=True, exclusive=False)
+        self.run_worker(
+            partial(self._stats_worker, token, snapshot), thread=True, exclusive=False
+        )
 
     def _stats_worker(self, token: int, snapshot: list[int]):
         """后台线程：计算统计后回 UI 线程回填（版本号防竞态）。"""
@@ -824,21 +683,18 @@ class VcfBrowser(App):
         self._remove_search_bar()
         bar = Input(
             placeholder="搜索 ID / 坐标 / 范围（如 rs12345、chr1:10234、chr1:10000-20000 或 chr1:10000..20000）… (Enter 确认, Esc 取消)",
-            id="search-input")
+            id="search-input",
+        )
         await self.mount(bar)
         bar.focus()
 
     def _remove_search_bar(self) -> None:
-        try:
-            self.query_one("#search-input", Input).remove()
-        except Exception:  # noqa: BLE001, S110 — 搜索栏不存在时静默即可
-            pass
+        bar = self._get_search_bar()
+        if bar is not None:
+            bar.remove()
 
     def _get_search_bar(self) -> Input | None:
-        try:
-            return self.query_one("#search-input", Input)
-        except Exception:  # noqa: BLE001
-            return None
+        return self.query_one_optional("#search-input", Input)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self._remove_search_bar()
@@ -857,15 +713,28 @@ class VcfBrowser(App):
                 li = self._find_coord_in_view(chrom, start, end)
             else:
                 li = self._find_coord_nearest(chrom, start)
-            suffix = f"（当前已索引 {len(self.variants):,} 条）" if self.scanning else ""
+            suffix = (
+                f"（当前已索引 {len(self.variants):,} 条）" if self.scanning else ""
+            )
             if li is None:
-                rng = f"{chrom}:{start:,}-{end:,}" if end is not None else f"{chrom}:{start:,}"
-                msg = f"{rng} 该范围内无变异" if end is not None else f"{chrom} 上未找到 {start:,} 附近的变异"
+                rng = (
+                    f"{chrom}:{start:,}-{end:,}"
+                    if end is not None
+                    else f"{chrom}:{start:,}"
+                )
+                msg = (
+                    f"{rng} 该范围内无变异"
+                    if end is not None
+                    else f"{chrom} 上未找到 {start:,} 附近的变异"
+                )
                 self.notify(msg + suffix, title="搜索", severity="warning")
                 return
             self._goto_abs(li)
             v = self.variants[self.view[li]]
-            self.notify(f"跳转到 {v.chrom}:{v.pos:,} {v.id or ''}".strip() + suffix, title="搜索")
+            self.notify(
+                f"跳转到 {v.chrom}:{v.pos:,} {v.id or ''}".strip() + suffix,
+                title="搜索",
+            )
             return
         # 2) 回退：ID / 精确坐标字符串匹配
         q = value.lower()
@@ -875,9 +744,11 @@ class VcfBrowser(App):
             coord_comma = f"{v.chrom}:{v.pos:,}".lower()
             if q == v.id.lower() or q in (coord, coord_comma) or q in v.id.lower():
                 self._goto_abs(li)
-                self.notify(f"找到: {v.chrom}:{v.pos:,} {v.id or ''}".strip(), title="搜索")
+                self.notify(
+                    f"找到: {v.chrom}:{v.pos:,} {v.id or ''}".strip(), title="搜索"
+                )
                 return
-        self.notify(f"未找到匹配 \"{value}\"", title="搜索", severity="warning")
+        self.notify(f'未找到匹配 "{value}"', title="搜索", severity="warning")
 
     def on_key(self, event) -> None:
         """命令栏存在时：Esc 关闭，其他键交给 Input。"""
@@ -955,7 +826,9 @@ class VcfBrowser(App):
         txt.append("  格式     ", style="dim")
         txt.append(f"{self.meta.fileformat or '未知'}\n")
         txt.append("  样本数   ", style="dim")
-        txt.append(f"{len(self.meta.samples)}  ({', '.join(self.meta.samples) or '无'})\n")
+        txt.append(
+            f"{len(self.meta.samples)}  ({', '.join(self.meta.samples) or '无'})\n"
+        )
         txt.append("  变异数   ", style="dim")
         txt.append(f"{len(self.variants):,}\n")
         if self.skipped:

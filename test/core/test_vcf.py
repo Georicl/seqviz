@@ -1,9 +1,10 @@
 """VCF 解析层测试（对应 docs/superpowers/plans Task 1-4）。"""
+
 from pathlib import Path
 
 import pytest
 
-from seqviz.vcf import (
+from seqviz.core.vcf import (
     Variant,
     VariantType,
     classify_variant,
@@ -18,7 +19,7 @@ from seqviz.vcf import (
     scan_vcf_resume,
 )
 
-SAMPLE_VCF = Path(__file__).parent / "sample.vcf"
+SAMPLE_VCF = (Path(__file__).resolve().parents[1] / "data") / "sample.vcf"
 
 
 class TestClassifyVariant:
@@ -55,6 +56,14 @@ class TestClassifyVariant:
         assert classify_variant("A", "<DUP>,G") == VariantType.COMPLEX  # 多等位取首个
         assert classify_variant("A", "A]chr2:123]") == VariantType.COMPLEX
         assert classify_variant("A", "[chr2:123[A") == VariantType.COMPLEX
+
+    @pytest.mark.parametrize("alt", [".A", "A.", ".TGCA", "ATGC."])
+    def test_single_breakends_are_not_counted_as_indels(self, alt):
+        variant = Variant("chr1", 100, "bnd1", "A", alt, 50, "PASS")
+        assert classify_variant(variant.ref, variant.alt) is VariantType.COMPLEX
+        stats = compute_stats([variant])
+        assert stats["complex"] == 1
+        assert stats["indel"] == 0
 
 
 class TestParseGenotype:
@@ -144,9 +153,14 @@ class TestScanVcf:
         assert meta.samples == ["sample1", "sample2", "sample3"]
         assert meta.has_header is True
         first = variants[0]
-        assert (first.chrom, first.pos, first.ref, first.alt) == ("chr1", 10234, "A", "G")
-        assert first.info["AF"] == "0.333"   # INFO 在索引阶段已解析
-        assert first.samples == {}            # 样本列懒加载
+        assert (first.chrom, first.pos, first.ref, first.alt) == (
+            "chr1",
+            10234,
+            "A",
+            "G",
+        )
+        assert first.info["AF"] == "0.333"  # INFO 在索引阶段已解析
+        assert first.samples == {}  # 样本列懒加载
         assert first.offset > 0
 
     def test_empty_file(self, tmp_path):
@@ -165,10 +179,12 @@ class TestScanVcf:
 
     def test_malformed_lines_skipped_and_counted(self, tmp_path):
         f = tmp_path / "bad.vcf"
-        f.write_text("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
-                     "chr1\t1\t.\tA\tG\t.\tPASS\t.\n"
-                     "garbage line\n"
-                     "chr1\t2\t.\tC\tT\t.\tPASS\t.\n")
+        f.write_text(
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+            "chr1\t1\t.\tA\tG\t.\tPASS\t.\n"
+            "garbage line\n"
+            "chr1\t2\t.\tC\tT\t.\tPASS\t.\n"
+        )
         _, variants, skipped = scan_vcf(f)
         assert len(variants) == 2 and skipped == 1
 
@@ -213,8 +229,9 @@ class TestQuickScanAndResume:
         tail, skipped2 = scan_vcf_resume(SAMPLE_VCF, cont)
         merged = head + tail
         assert len(merged) == len(full)
-        assert [(v.chrom, v.pos, v.ref, v.alt) for v in merged] == \
-               [(v.chrom, v.pos, v.ref, v.alt) for v in full]
+        assert [(v.chrom, v.pos, v.ref, v.alt) for v in merged] == [
+            (v.chrom, v.pos, v.ref, v.alt) for v in full
+        ]
         assert skipped1 + skipped2 == 0
 
     def test_quick_scan_small_file_no_continuation(self):
@@ -233,8 +250,9 @@ class TestQuickScanAndResume:
         _, full, _ = scan_vcf(SAMPLE_VCF)
         _, _, _, cont = scan_vcf_quick(SAMPLE_VCF, limit=3)
         batches = []
-        tail, _ = scan_vcf_resume(SAMPLE_VCF, cont, on_batch=batches.append,
-                                  callback_interval=0.0)
+        tail, _ = scan_vcf_resume(
+            SAMPLE_VCF, cont, on_batch=batches.append, callback_interval=0.0
+        )
         assert sum(len(b) for b in batches) == len(tail) == len(full) - 3
 
     def test_resume_stop_iteration_aborts(self, tmp_path):
@@ -246,6 +264,7 @@ class TestQuickScanAndResume:
 
         def _stop(batch):
             raise StopIteration
+
         _, _, _, cont = scan_vcf_quick(f, limit=10)
         tail, _ = scan_vcf_resume(f, cont, on_batch=_stop)
         assert len(tail) < 10000  # 提前中断

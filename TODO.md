@@ -5,49 +5,13 @@
 >
 > 原名 `fasta-fmt`，已更名为 `seqviz`（涵盖 FASTA/FASTQ/VCF 等序列数据可视化）。
 
-**当前版本**: v0.7.0rc2
+**当前版本**: v0.7.0
 
 ---
 
 ## 项目结构
 
-```
-fasta-fmt/
-├── src/
-│   └── seqviz/
-│       ├── __init__.py         # 包入口
-│       ├── cli.py              # CLI 入口 (Typer)
-│       ├── parsers.py          # FASTA 解析器
-│       ├── fastq.py            # FASTQ 解析器
-│       ├── vcf.py              # VCF 解析器
-│       ├── renderer.py         # 序列着色渲染
-│       ├── seq_type.py         # 序列类型检测 (DNA/Protein)
-│       ├── stats.py            # 统计计算 (N50, GC%, 长度分布)
-│       ├── browser.py          # TUI 交互式浏览器 (Textual)
-│       ├── vcf_browser.py      # VCF TUI 浏览器 (双栏布局)
-│       ├── file_browser.py     # 目录文件选择器
-│       ├── clipboard.py        # 剪贴板操作 (分层回退)
-│       ├── config.py           # JSON 配置系统
-│       └── theme.py            # 主题系统 (8 套内置主题)
-├── test/
-│   ├── conftest.py             # 动态 fixture + 配置隔离
-│   ├── test_browser.py
-│   ├── test_cli.py
-│   ├── test_config_theme.py
-│   ├── test_core.py
-│   ├── test_file_browser.py
-│   ├── test_parsers.py
-│   ├── test_performance.py
-│   ├── test_regressions.py
-│   ├── test_vcf.py
-│   └── test_vcf_browser.py
-├── config/
-│   ├── config.json             # 默认配置模板
-│   └── theme.json              # 主题配置模板
-├── pyproject.toml
-├── README.md
-└── TODO.md
-```
+代码按 `core/` 数据处理和 `ui/` 终端界面划分，CLI、配置与剪贴板保留独立入口。详细目录及坐标约定见 [README](README.md#代码结构)。
 
 ---
 
@@ -128,7 +92,7 @@ fasta-fmt/
 
 - [x] **4.1 文档与测试**
   - [x] README 文档
-  - [x] 单元测试 333 项全部通过
+  - [x] 单元测试、界面交互测试及问题回归测试
   - [x] 性能测试与回归测试
   - [x] 单元测试覆盖率 > 80% (CI 门禁 85%)
   - [ ] GIF 演示
@@ -146,17 +110,14 @@ fasta-fmt/
 
 - [x] 添加 GitHub Actions CI (自动测试 + ruff lint)
 - [x] 添加 LICENSE 文件 (MIT)
-- [ ] browser.py 拆分重构 (当前 1220 行 God Object)
-  - [ ] 提取 sequence_view.py (分块引擎 + SequenceView)
-  - [ ] 提取 components.py (共享 UI 组件)
-  - [ ] 提取 app.py (控制器)
-- [ ] 统一 VCF 检测逻辑 (消除 cli.py / file_browser.py / browser.py 三处平行判断)
+- [x] 序列浏览器拆分为数据读取器、显示视图、控件与应用控制器
+- [x] 文件格式识别集中到 core/formats.py
 
 ### 中优先级
 
-- [ ] _load_chunk 添加 LRU 缓存 (减少 HDD 上的 seek+read 次数)
+- [x] 序列读取使用一屏缓冲，减少非等宽 FASTA 的重复回扫
 - [ ] compute_stats 改为接受 Iterable (消除中间列表分配)
-- [ ] vcf_browser.py 硬编码常量可配置化 (WINDOW=400)
+- [ ] VCF 界面窗口大小可配置化 (WINDOW=400)
 - [x] 剪贴板逻辑去重 (已提取为 clipboard.py 共享模块)
 
 ### 低优先级 / 可选
@@ -225,5 +186,5 @@ seqviz config --init         # 生成配置模板
 | v0.2.0 | FASTQ + 筛选 | ✅ 已发布 |
 | v0.3.0 | JSON 配置 + 性能优化 | ✅ 已发布 |
 | v0.5.0 | TUI 浏览器 + 文件选择器 | ✅ 已发布 |
-| v0.7.0 | VCF 可视化 + 双栏布局 | 🔄 rc2 |
+| v0.7.0 | VCF 可视化、问题修复与数据/界面分层 | ✅ 稳定版 |
 | v1.0.0 | 稳定版 + CI + 完整文档 | 📋 规划中 |

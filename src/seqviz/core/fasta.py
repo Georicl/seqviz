@@ -1,34 +1,33 @@
-import gzip
+"""按记录解析 FASTA，供 CLI 查看与统计使用。"""
+
 from collections.abc import Generator
 from pathlib import Path
 
+from seqviz.core.formats import open_seq_file
+
 
 def parse_fasta(filepath: str | Path) -> Generator[tuple[str, str]]:
-    """流式打开fasta 文件"""
+    """逐条解析 FASTA，序列行两端空白不计入碱基。"""
 
     filepath = Path(filepath)
-
-    # 选择打开格式, 如果是.gz结尾, 则使用gzip（大小写不敏感，与 browser/file_browser 一致）
-    opener = gzip.open if filepath.suffix.lower() == ".gz" else open
 
     header = None
     seq_parts: list[str] = []
 
-    with opener(filepath, "rt", encoding="utf-8", errors="replace") as f:
+    with open_seq_file(filepath, "rt", encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.rstrip("\n")
 
             if line.startswith(">"):
-                # 如果上一条有header, 清除
                 if header is not None:
                     yield header, "".join(seq_parts)
 
-                header = line[1:].strip()  # 去掉 > 符号并去除首尾空白（与 browser 索引一致）
+                header = line[1:].strip()  # 与序列索引使用相同的标题规则。
                 seq_parts = []
 
             else:
-                seq_parts.append(line)
+                # 序列行两端的空白属于排版，与浏览器使用同一条规则。
+                seq_parts.append(line.strip())
 
         if header is not None:
             yield header, "".join(seq_parts)
-            

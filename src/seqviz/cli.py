@@ -9,20 +9,21 @@ from rich.text import Text
 from typer.core import TyperGroup
 
 from seqviz import config as config_mod
-from seqviz import theme as theme_mod
-from seqviz.browser import FastaBrowser
-from seqviz.fastq import parse_fastq
-from seqviz.file_browser import is_vcf_file, run_file_browser, scan_directory
-from seqviz.parsers import parse_fasta
-from seqviz.renderer import (
+from seqviz.core.fasta import parse_fasta
+from seqviz.core.fastq import parse_fastq
+from seqviz.core.files import scan_directory
+from seqviz.core.formats import is_vcf_file
+from seqviz.core.seq_type import SeqType, detect_seq_type
+from seqviz.core.stats import calc_n50, calc_sequence_stats, quality_stats
+from seqviz.ui import theme as theme_mod
+from seqviz.ui.files import run_file_browser
+from seqviz.ui.renderer import (
     colorize_quality,
     colorize_sequence,
     position_ruler,
     quality_bar,
-    quality_stats,
 )
-from seqviz.seq_type import SeqType, detect_seq_type
-from seqviz.stats import calc_n50, calc_sequence_stats
+from seqviz.ui.sequence.app import FastaBrowser
 
 
 class _DefaultBrowseGroup(TyperGroup):
@@ -66,10 +67,6 @@ def _read_error_exit(e: OSError) -> None:
     raise typer.Exit(code=1) from None
 
 
-# 兼容旧名称：统一复用 file_browser.is_vcf_file 的单一实现，避免两套判定分歧
-_is_vcf = is_vcf_file
-
-
 def _reject_unsupported(path: Path) -> None:
     """对明确不支持的文件类型友好报错，避免静默按 FASTA 解析产生空界面。"""
     if not path.is_file():
@@ -78,7 +75,9 @@ def _reject_unsupported(path: Path) -> None:
     if suffix == ".gz":
         inner = Path(path.stem).suffix.lower()
         if inner == ".vcf":
-            console.print(f"[red]错误: 暂不支持压缩 VCF 文件: {escape(str(path))}[/red]（请先解压为 .vcf）")
+            console.print(
+                f"[red]错误: 暂不支持压缩 VCF 文件: {escape(str(path))}[/red]（请先解压为 .vcf）"
+            )
             raise typer.Exit(code=1)
         suffix = inner
     if suffix in _UNSUPPORTED_EXTS:
@@ -89,7 +88,13 @@ def _reject_unsupported(path: Path) -> None:
 def _print_fasta_record(header: str, seq: str, wrap: int) -> None:
     """打印一条 FASTA 记录：header + 类型标签 + 位置标尺 + 分块着色序列。"""
     seqtype = detect_seq_type(seq)
-    type_label = "DNA" if seqtype == SeqType.DNA else "Protein" if seqtype == SeqType.PROTEIN else "Unknown"
+    type_label = (
+        "DNA"
+        if seqtype == SeqType.DNA
+        else "Protein"
+        if seqtype == SeqType.PROTEIN
+        else "Unknown"
+    )
 
     console.print(
         f"[bold cyan]> {escape(header)}[/bold cyan] "
@@ -110,16 +115,21 @@ def _run_vcf_browser(path: Path):
 
     空文件/无 #CHROM 表头时友好报错非零退出。
     """
-    from seqviz.vcf import scan_vcf_quick
-    from seqviz.vcf_browser import VcfBrowser
+    from seqviz.core.vcf import scan_vcf_quick
+    from seqviz.ui.variants.app import VcfBrowser
+
     QUICK_LIMIT = 5000
     try:
         meta, variants, skipped, cont = scan_vcf_quick(path, limit=QUICK_LIMIT)
     except OSError as exc:
-        console.print(f"[red]错误: 无法读取文件 {escape(str(path))}: {escape(str(exc))}[/red]")
+        console.print(
+            f"[red]错误: 无法读取文件 {escape(str(path))}: {escape(str(exc))}[/red]"
+        )
         raise typer.Exit(code=1)
     if not meta.has_header:
-        console.print(f"[red]错误: 不是有效的 VCF 文件（缺少 #CHROM 表头）: {escape(str(path))}[/red]")
+        console.print(
+            f"[red]错误: 不是有效的 VCF 文件（缺少 #CHROM 表头）: {escape(str(path))}[/red]"
+        )
         raise typer.Exit(code=1)
     if not variants:
         console.print(f"[red]错误: VCF 文件中没有变异记录: {escape(str(path))}[/red]")
@@ -134,7 +144,7 @@ def _launch_browser(paths: list[Path]):
     单个 .vcf 文件路由到 VcfBrowser。
     """
     # 单文件且为 .vcf → VCF 变异浏览器
-    if len(paths) == 1 and _is_vcf(paths[0]):
+    if len(paths) == 1 and is_vcf_file(paths[0]):
         _run_vcf_browser(paths[0])
         return
 
@@ -148,7 +158,12 @@ def _launch_browser(paths: list[Path]):
         expanded: list[Path] = []
         for p in paths:
             if p.is_dir():
-                expanded.extend(info.path for info in scan_directory(p))
+                expanded.extend(
+                    info.path
+                    for info in scan_directory(
+                        p, config_mod.get("file_browser.extensions")
+                    )
+                )
             else:
                 expanded.append(p)
         paths = expanded
@@ -169,16 +184,19 @@ def _launch_browser(paths: list[Path]):
             raise typer.Exit()
 
         # 选中结果若为单个 .vcf → 路由到 VcfBrowser
-        if len(open_paths) == 1 and _is_vcf(open_paths[0]):
+        if len(open_paths) == 1 and is_vcf_file(open_paths[0]):
             _run_vcf_browser(open_paths[0])
             break
 
         # VCF 暂不支持与序列文件混合打开：剥离并提示，避免在 FastaBrowser 中产生静默空标签页
-        mixed_vcfs = [p for p in open_paths if _is_vcf(p)]
+        mixed_vcfs = [p for p in open_paths if is_vcf_file(p)]
         if mixed_vcfs and len(open_paths) > 1:
-            console.print("[yellow]VCF 文件暂不支持与其他文件混合打开，已跳过: "
-                          + ", ".join(escape(p.name) for p in mixed_vcfs) + "[/yellow]")
-            open_paths = [p for p in open_paths if not _is_vcf(p)]
+            console.print(
+                "[yellow]VCF 文件暂不支持与其他文件混合打开，已跳过: "
+                + ", ".join(escape(p.name) for p in mixed_vcfs)
+                + "[/yellow]"
+            )
+            open_paths = [p for p in open_paths if not is_vcf_file(p)]
             if not open_paths:
                 if source_dir is not None:
                     continue  # 回到文件选择器重新选择
@@ -197,6 +215,7 @@ def _launch_browser(paths: list[Path]):
 def _version_callback(value: bool) -> None:
     if value:
         from seqviz import __version__
+
         console.print(f"seqviz {__version__}")
         raise typer.Exit()
 
@@ -205,8 +224,12 @@ def _version_callback(value: bool) -> None:
 def main(
     ctx: typer.Context,
     version: bool = typer.Option(
-        False, "--version", "-V", help="显示版本号",
-        callback=_version_callback, is_eager=True,
+        False,
+        "--version",
+        "-V",
+        help="显示版本号",
+        callback=_version_callback,
+        is_eager=True,
     ),
 ):
     """seqviz — 生物序列数据终端可视化工具。
@@ -238,10 +261,9 @@ def view(
     except OSError as e:
         _read_error_exit(e)
 
+
 @app.command()
-def stats(
-    file: Path = typer.Argument(help="FASTA 文件路径")
-):
+def stats(file: Path = typer.Argument(help="FASTA 文件路径")):
     """统计 FASTA 文件特征"""
     _check_file(file)
     lengths: list[int] = []
@@ -258,7 +280,7 @@ def stats(
             count += 1
     except OSError as e:
         _read_error_exit(e)
-    
+
     if count == 0:
         console.print("[red]文件中没有序列[/red]")
         raise typer.Exit(code=1)  # 错误路径应非零退出
@@ -280,6 +302,7 @@ def stats(
 
     console.print(table)
 
+
 @app.command()
 def head(
     file: Path = typer.Argument(help="FASTA 文件路径"),
@@ -296,12 +319,13 @@ def head(
             count += 1
     except OSError as e:
         _read_error_exit(e)
-    
+
     if count == 0:
         console.print("[red]文件中没有序列[/red]")
         raise typer.Exit(code=1)  # 错误路径应非零退出
-    
+
     console.print(f"[dim]共显示 {count} 条序列[/dim]")
+
 
 @app.command()
 def fqview(
@@ -314,14 +338,19 @@ def fqview(
     count = 0
     try:
         records = parse_fastq(str(file))
-        for header, seq, quality in (islice(records, n) if n > 0 else records):
-
+        for header, seq, quality in islice(records, n) if n > 0 else records:
             count += 1
             seqtype = detect_seq_type(seq)
             qstats = quality_stats(quality)
 
             # ── header 行：名称 + 类型 + 长度 + 平均质量 ──
-            type_label = "DNA" if seqtype == SeqType.DNA else "Protein" if seqtype == SeqType.PROTEIN else "Unknown"
+            type_label = (
+                "DNA"
+                if seqtype == SeqType.DNA
+                else "Protein"
+                if seqtype == SeqType.PROTEIN
+                else "Unknown"
+            )
             console.print(
                 f"[bold cyan]▶ Read {count}[/bold cyan] "
                 f"[white]{escape(header)}[/white] "
@@ -346,7 +375,9 @@ def fqview(
 
                 # 序列行（按 chunk 着色）
                 console.print("  ", end="")
-                console.print(colorize_sequence(seq[chunk_start:chunk_end], seq_type=seqtype))
+                console.print(
+                    colorize_sequence(seq[chunk_start:chunk_end], seq_type=seqtype)
+                )
 
                 # 质量行（与序列等宽对齐）
                 console.print("  ", end="")
@@ -361,17 +392,19 @@ def fqview(
         raise typer.Exit(code=1) from None
     except OSError as e:
         _read_error_exit(e)
-    
+
     if count == 0:
         console.print("[red]文件中没有序列[/red]")
         raise typer.Exit(code=1)  # 错误路径应非零退出
-    
+
     console.print(f"[dim]共显示 {count} 条 reads[/dim]")
 
 
 @app.command(hidden=True)
 def browse(
-    files: list[Path] = typer.Argument(help="FASTA/FASTQ 文件或目录路径（目录会启动文件选择器）"),
+    files: list[Path] = typer.Argument(
+        help="FASTA/FASTQ 文件或目录路径（目录会启动文件选择器）"
+    ),
 ):
     """交互式浏览 FASTA/FASTQ/VCF 文件（主功能；等价于 seqviz <路径>，保留作兼容别名）。"""
     for p in files:  # 校验路径存在，与其他子命令的友好报错保持一致
@@ -384,7 +417,9 @@ def browse(
 
 @app.command()
 def config(
-    init: bool = typer.Option(False, "--init", help="生成默认配置文件模板 (config.json + theme.json)"),
+    init: bool = typer.Option(
+        False, "--init", help="生成默认配置文件模板 (config.json + theme.json)"
+    ),
 ):
     """查看当前生效的配置与主题（--init 生成配置文件模板）。"""
     import json
@@ -408,31 +443,39 @@ def config(
                     "在此覆盖界面主题字段（对 config.json 中 theme 指定的内置主题生效）。"
                     "可用字段: background/foreground/border/accent/panel/muted/highlight/gutter。"
                     "仅写入想覆盖的字段，其余保持内置值；以 _ 开头的键为注释会被忽略。"
-                    "切换主题请修改 config.json 的 \"theme\" 字段。"
+                    '切换主题请修改 config.json 的 "theme" 字段。'
                 ),
                 "_available_themes": theme_mod.list_themes(),
             }
             with open(theme_mod.THEME_FILE, "w") as f:
                 json.dump(theme_template, f, indent=2, ensure_ascii=False)
             console.print(f"[green]已生成主题模板: {theme_mod.THEME_FILE}[/green]")
-        console.print("[dim]编辑 config.json 自定义行为/序列配色/后缀；编辑 theme.json 自定义界面主题。[/dim]")
+        console.print(
+            "[dim]编辑 config.json 自定义行为/序列配色/后缀；编辑 theme.json 自定义界面主题。[/dim]"
+        )
         console.print(f"[dim]可用内置主题:[/dim] {', '.join(theme_mod.list_themes())}")
-        console.print("[dim]在 config.json 中设置 \"theme\": \"nord\" 即可切换[/dim]")
+        console.print('[dim]在 config.json 中设置 "theme": "nord" 即可切换[/dim]')
         raise typer.Exit()
 
     # 显示配置文件路径与生效配置
     cfg_path = config_mod.CONFIG_FILE
     exists = cfg_path.exists()
-    console.print(f"[dim]配置文件:[/dim] {cfg_path} "
-                  f"[green](已加载)[/green]" if exists else f"[dim]配置文件:[/dim] {cfg_path} [yellow](不存在，使用默认值)[/yellow]")
+    console.print(
+        f"[dim]配置文件:[/dim] {cfg_path} [green](已加载)[/green]"
+        if exists
+        else f"[dim]配置文件:[/dim] {cfg_path} [yellow](不存在，使用默认值)[/yellow]"
+    )
     console.print()
     console.print_json(json.dumps(config_mod.get_config(), ensure_ascii=False))
     console.print()
     # 显示主题
     th_path = theme_mod.THEME_FILE
     th_exists = th_path.exists()
-    console.print(f"[dim]主题文件:[/dim] {th_path} "
-                  f"[green](已加载)[/green]" if th_exists else f"[dim]主题文件:[/dim] {th_path} [yellow](不存在，使用默认值)[/yellow]")
+    console.print(
+        f"[dim]主题文件:[/dim] {th_path} [green](已加载)[/green]"
+        if th_exists
+        else f"[dim]主题文件:[/dim] {th_path} [yellow](不存在，使用默认值)[/yellow]"
+    )
     console.print()
     console.print_json(json.dumps(theme_mod.get_theme(), ensure_ascii=False))
     console.print()
@@ -444,4 +487,4 @@ def config(
         for t in themes
     )
     console.print(f"[dim]可用主题:[/dim] {theme_list}")
-    console.print(f"[dim]在 config.json 中设置 \"theme\": \"{themes[0]}\" 切换主题[/dim]")
+    console.print(f'[dim]在 config.json 中设置 "theme": "{themes[0]}" 切换主题[/dim]')

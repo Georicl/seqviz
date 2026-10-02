@@ -1,14 +1,14 @@
-"""seqviz.parsers 模块的测试套件"""
+"""FASTA 记录解析、空白处理与压缩输入。"""
 
 import gzip
 from pathlib import Path
 
 import pytest
 
-from seqviz.parsers import parse_fasta
+from seqviz.core.fasta import parse_fasta
 
 # 测试数据路径
-TEST_FA = Path(__file__).parent / "test.fa"
+TEST_FA = (Path(__file__).resolve().parents[1] / "data") / "test.fa"
 
 
 # ── 使用 test.fa 的基础测试 ──────────────────────────────────
@@ -72,6 +72,7 @@ class TestParseFastaWithTestFile:
     def test_parse_is_generator(self):
         """返回的是生成器(流式解析)"""
         import types
+
         result = parse_fasta(TEST_FA)
         assert isinstance(result, types.GeneratorType)
 
@@ -80,6 +81,11 @@ class TestParseFastaWithTestFile:
 
 
 class TestParseFastaEdgeCases:
+    def test_sequence_line_padding_is_not_a_base(self, tmp_path):
+        f = tmp_path / "padded.fa"
+        f.write_text(">s\n  ACGT\t\n\tGGCC  \n")
+        assert list(parse_fasta(f)) == [("s", "ACGTGGCC")]
+
     """边界情况与异常处理测试"""
 
     def test_empty_file(self, tmp_path: Path):
@@ -186,7 +192,8 @@ class TestParseEncodingAndMalformed:
 
     def test_fastq_trailing_blank_line_skipped(self, tmp_path: Path):
         """尾部空行应被跳过，不报格式错误。"""
-        from seqviz.fastq import parse_fastq
+        from seqviz.core.fastq import parse_fastq
+
         f = tmp_path / "t.fastq"
         f.write_text("@r1\nACGT\n+\nIIII\n\n")
         records = list(parse_fastq(f))
@@ -195,14 +202,16 @@ class TestParseEncodingAndMalformed:
 
     def test_fastq_blank_lines_between_records(self, tmp_path: Path):
         """记录之间的空行应被跳过。"""
-        from seqviz.fastq import parse_fastq
+        from seqviz.core.fastq import parse_fastq
+
         f = tmp_path / "t.fastq"
         f.write_text("@r1\nACGT\n+\nIIII\n\n@r2\nTTTT\n+\nHHHH\n")
         records = list(parse_fastq(f))
         assert len(records) == 2
 
     def test_fastq_non_utf8_header(self, tmp_path: Path):
-        from seqviz.fastq import parse_fastq
+        from seqviz.core.fastq import parse_fastq
+
         f = tmp_path / "latin1.fastq"
         f.write_bytes(b"@caf\xe9\nACGT\n+\nIIII\n")
         records = list(parse_fastq(f))
@@ -210,7 +219,8 @@ class TestParseEncodingAndMalformed:
 
     def test_fastq_truncated_record_raises(self, tmp_path: Path):
         """记录在质量行处截断：应报错而非静默产出空质量的幻影记录。"""
-        from seqviz.fastq import parse_fastq
+        from seqviz.core.fastq import parse_fastq
+
         f = tmp_path / "trunc1.fastq"
         f.write_text("@r1\nACGT\n+\n")  # 缺质量行
         with pytest.raises(ValueError, match="质量行"):
@@ -226,7 +236,8 @@ class TestParseEncodingAndMalformed:
 
     def test_fastq_multiline_sequence_clear_error(self, tmp_path: Path):
         """序列跨行（多行序列）应提示 '+' 分隔符错误而非误导性的 '@' 错误。"""
-        from seqviz.fastq import parse_fastq
+        from seqviz.core.fastq import parse_fastq
+
         f = tmp_path / "multi.fastq"
         f.write_text("@r1\nACGT\nACGT\n+\nIIIIIIII\n")
         with pytest.raises(ValueError, match=r"\+"):

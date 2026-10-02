@@ -7,12 +7,13 @@
 import json
 from pathlib import Path
 
+from seqviz import config
+
 # ═══════════════════════════════════════════════════════════════
 #  内置主题
 # ═══════════════════════════════════════════════════════════════
 
 BUILTIN_THEMES: dict[str, dict] = {
-
     # ── 1. light（白底黑字 · 清晰明亮） ──
     "light": {
         "background": "#ffffff",
@@ -24,7 +25,6 @@ BUILTIN_THEMES: dict[str, dict] = {
         "highlight": "#e8f0fb",
         "gutter": "#f0f0f0",
     },
-
     # ── 2. dark（经典深色 · 护眼低对比） ──
     "dark": {
         "background": "#1e1e2e",
@@ -36,7 +36,6 @@ BUILTIN_THEMES: dict[str, dict] = {
         "highlight": "#313244",
         "gutter": "#181825",
     },
-
     # ── 3. nord（北极冷色 · 柔和优雅） ──
     "nord": {
         "background": "#2e3440",
@@ -48,7 +47,6 @@ BUILTIN_THEMES: dict[str, dict] = {
         "highlight": "#3b4252",
         "gutter": "#272e3a",
     },
-
     # ── 4. gruvbox（暖色复古 · 棕黄基调） ──
     "gruvbox": {
         "background": "#282828",
@@ -60,7 +58,6 @@ BUILTIN_THEMES: dict[str, dict] = {
         "highlight": "#3c3836",
         "gutter": "#1d2021",
     },
-
     # ── 5. catppuccin（柔和粉彩 · 温暖暗色） ──
     "catppuccin": {
         "background": "#1e1e2e",
@@ -72,7 +69,6 @@ BUILTIN_THEMES: dict[str, dict] = {
         "highlight": "#313244",
         "gutter": "#181825",
     },
-
     # ── 6. solarized（经典 Solarized Dark） ──
     "solarized": {
         "background": "#002b36",
@@ -84,7 +80,6 @@ BUILTIN_THEMES: dict[str, dict] = {
         "highlight": "#073642",
         "gutter": "#073642",
     },
-
     # ── 7. rose-pine（玫瑰松木 · 低饱和暖紫） ──
     "rose-pine": {
         "background": "#191724",
@@ -96,7 +91,6 @@ BUILTIN_THEMES: dict[str, dict] = {
         "highlight": "#26233a",
         "gutter": "#1f1d2e",
     },
-
     # ── 8. tokyo-night（东京夜景 · 蓝紫冷调） ──
     "tokyo-night": {
         "background": "#1a1b26",
@@ -114,7 +108,15 @@ BUILTIN_THEMES: dict[str, dict] = {
 DEFAULT_THEME_NAME = "dark"
 
 # 暗色主题集合（用于自动设置 App.DARK）
-DARK_THEMES = {"dark", "nord", "gruvbox", "catppuccin", "solarized", "rose-pine", "tokyo-night"}
+DARK_THEMES = {
+    "dark",
+    "nord",
+    "gruvbox",
+    "catppuccin",
+    "solarized",
+    "rose-pine",
+    "tokyo-night",
+}
 
 # ═══════════════════════════════════════════════════════════════
 #  主题加载
@@ -122,17 +124,6 @@ DARK_THEMES = {"dark", "nord", "gruvbox", "catppuccin", "solarized", "rose-pine"
 
 THEME_DIR = Path.home() / ".config" / "seqviz"
 THEME_FILE = THEME_DIR / "theme.json"
-
-
-def _deep_merge(base: dict, override: dict) -> dict:
-    """深度合并：override 覆盖 base。"""
-    result = dict(base)
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
 
 
 def load_theme(theme_name: str | None = None) -> dict:
@@ -159,27 +150,20 @@ def load_theme(theme_name: str | None = None) -> dict:
                 # 非字符串值（null/数字/数组）过滤掉：直接内插 CSS 会触发
                 # StylesheetParseError 导致应用无法启动
                 user_colors = {
-                    k: v for k, v in user_theme.items()
-                    if k != "name" and not (isinstance(k, str) and k.startswith("_"))
-                    and isinstance(v, str)
+                    k: v
+                    for k, v in user_theme.items()
+                    if k != "name" and not k.startswith("_") and isinstance(v, str)
                 }
-                if user_colors:
-                    theme = _deep_merge(theme, user_colors)
-        except (json.JSONDecodeError, OSError):
+                theme.update(user_colors)
+        except json.JSONDecodeError, OSError:
             pass
     return theme
 
 
 def get_theme_name() -> str:
-    """从 config 获取主题名。"""
-    try:
-        from seqviz import config as config_mod
-        name = config_mod.get("theme")
-        if name and name in BUILTIN_THEMES:
-            return name
-    except (ImportError, KeyError):
-        pass  # 配置加载失败时使用默认主题
-    return DEFAULT_THEME_NAME
+    """配置中的主题名未知时使用默认主题。"""
+    name = config.get("theme")
+    return name if name in BUILTIN_THEMES else DEFAULT_THEME_NAME
 
 
 def is_dark_theme(theme_name: str | None = None) -> bool:
@@ -195,7 +179,7 @@ def list_themes() -> list[str]:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  单例 & 兼容
+#  主题缓存
 # ═══════════════════════════════════════════════════════════════
 
 _theme: dict | None = None
@@ -213,19 +197,16 @@ def reset_theme():
     """重置主题单例（用于测试或主题切换后刷新）。
 
     注意：FastaBrowser/FileBrowser 的 DARK/CSS 类属性在导入时从主题单例取值，
-    本函数不会改变已定义的应用类；切换主题后需创建新的应用实例（或重启进程）。
+    本函数不修改已定义的应用类；这些类需重新导入或重启进程以更新样式。
     """
     global _theme
     _theme = None
 
 
-# 兼容旧代码：DEFAULT_THEME 指向默认主题（dark）
-DEFAULT_THEME = BUILTIN_THEMES[DEFAULT_THEME_NAME]
-
-
 # ═══════════════════════════════════════════════════════════════
 #  CSS 生成
 # ═══════════════════════════════════════════════════════════════
+
 
 def build_browser_css(theme: dict) -> str:
     """生成序列浏览器（FastaBrowser）的 CSS。"""

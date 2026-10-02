@@ -7,25 +7,22 @@
 这样既保留了「数据文件不入库」的约定，又让 `uv run pytest` 在
 全新克隆的环境里可以直接通过，无需手动准备测试数据。
 """
+
 from pathlib import Path
 
 import pytest
 
-TEST_DIR = Path(__file__).parent
+TEST_DIR = Path(__file__).parent / "data"
 
 # run_perf_test.py 是需要外部生成 GB 级数据的手动基准脚本（配合 gen_perf_data.py），
 # 不属于常规 pytest 套件，排除收集。
-collect_ignore = ["run_perf_test.py"]
+collect_ignore = ["performance/run_perf_test.py"]
 
 # ── fixture 内容定义 ──────────────────────────────────────────
 
 # test.fa：2 条 DNA 序列（chr1 为多行拼接共 20bp，chr2 为 12bp）
 TEST_FA_CONTENT = (
-    ">chr1 Homo sapiens chromosome 1\n"
-    "ATCGATCGATCG\n"
-    "NNNNNNNN\n"
-    ">chr2\n"
-    "GGGGAAAACCCC\n"
+    ">chr1 Homo sapiens chromosome 1\nATCGATCGATCG\nNNNNNNNN\n>chr2\nGGGGAAAACCCC\n"
 )
 
 # test_protein.fa：2 条蛋白质序列（含 E/F/I/L/P/Q 等蛋白质特征氨基酸）
@@ -40,9 +37,18 @@ TEST_PROTEIN_CONTENT = (
 def _build_fastq() -> str:
     """构造 3 条带质量值的 FASTQ reads。"""
     reads = [
-        ("E150019865L1C001R00300001617/1", "TCTCAGCTCTGGTTCTGGTTCCGTACAGACTTTAGAGGACATGCAGAACATCTCTGCATTCAACTCATCC"),
-        ("E150019865L1C001R00300002549/1", "CCCGGCTTGAGTCCAGATTTAACTTAGTCTGGCTCCAAAAATAAACTTCAATCAAAAAATTGAAAAAAGG"),
-        ("E150019865L1C001R00300003311/1", "ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG"),
+        (
+            "E150019865L1C001R00300001617/1",
+            "TCTCAGCTCTGGTTCTGGTTCCGTACAGACTTTAGAGGACATGCAGAACATCTCTGCATTCAACTCATCC",
+        ),
+        (
+            "E150019865L1C001R00300002549/1",
+            "CCCGGCTTGAGTCCAGATTTAACTTAGTCTGGCTCCAAAAATAAACTTCAATCAAAAAATTGAAAAAAGG",
+        ),
+        (
+            "E150019865L1C001R00300003311/1",
+            "ATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCGATCG",
+        ),
     ]
     lines = []
     for header, seq in reads:
@@ -57,7 +63,7 @@ def _build_chr2() -> str:
     seq = (unit * 80)[:5600]
     lines = [">chr2"]
     for i in range(0, len(seq), 70):
-        lines.append(seq[i:i + 70])
+        lines.append(seq[i : i + 70])
     return "\n".join(lines) + "\n"
 
 
@@ -69,6 +75,7 @@ def _ensure_fixtures() -> None:
         "test_fastq.fastq": _build_fastq(),
         "chr2.fa": _build_chr2(),
     }
+    TEST_DIR.mkdir(exist_ok=True)
     for name, content in targets.items():
         path = TEST_DIR / name
         if not path.exists():
@@ -90,7 +97,8 @@ def _isolate_user_config(tmp_path_factory):
     未隔离时默认值断言会直接失败，导致测试基线环境敏感。
     """
     from seqviz import config as config_mod
-    from seqviz import theme as theme_mod
+    from seqviz.ui import theme as theme_mod
+
     tmp = tmp_path_factory.mktemp("seqviz_cfg")
     config_mod.CONFIG_DIR = tmp
     config_mod.CONFIG_FILE = tmp / "config.json"
@@ -104,6 +112,7 @@ def _reset_config_theme_singletons():
     """每个测试后重置 config/theme 单例，避免缓存泄漏造成顺序敏感。"""
     yield
     from seqviz import config as config_mod
-    from seqviz import theme as theme_mod
+    from seqviz.ui import theme as theme_mod
+
     config_mod._config = None
     theme_mod._theme = None

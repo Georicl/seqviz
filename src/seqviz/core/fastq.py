@@ -1,6 +1,9 @@
-import gzip
+"""FASTQ 记录解析与序列、质量值长度校验。"""
+
 from collections.abc import Generator
 from pathlib import Path
+
+from seqviz.core.formats import open_seq_file
 
 
 def parse_fastq(filepath: str | Path) -> Generator[tuple[str, str, str]]:
@@ -12,9 +15,8 @@ def parse_fastq(filepath: str | Path) -> Generator[tuple[str, str, str]]:
     避免静默产出空序列/空质量的幻影记录。
     """
     filepath = Path(filepath)
-    opener = gzip.open if filepath.suffix.lower() == ".gz" else open
 
-    with opener(filepath, "rt", encoding="utf-8", errors="replace") as f:
+    with open_seq_file(filepath, "rt", encoding="utf-8", errors="replace") as f:
         while True:
             header_line = f.readline()
             if not header_line:
@@ -25,19 +27,29 @@ def parse_fastq(filepath: str | Path) -> Generator[tuple[str, str, str]]:
                 continue  # 跳过空行（尾部空行/空行分隔），避免报格式错误
 
             if not header_line.startswith("@"):
-                raise ValueError(f"FASTQ 格式错误: 期望 '@' 开头, 得到: {header_line!r}")
+                raise ValueError(
+                    f"FASTQ 格式错误: 期望 '@' 开头, 得到: {header_line!r}"
+                )
 
             seq = f.readline()
             if not seq:
-                raise ValueError(f"FASTQ 格式错误: 记录 {header_line[1:]!r} 在序列行处截断")
+                raise ValueError(
+                    f"FASTQ 格式错误: 记录 {header_line[1:]!r} 在序列行处截断"
+                )
             plus = f.readline()
             if not plus:
-                raise ValueError(f"FASTQ 格式错误: 记录 {header_line[1:]!r} 缺少 '+' 分隔符（文件截断）")
+                raise ValueError(
+                    f"FASTQ 格式错误: 记录 {header_line[1:]!r} 缺少 '+' 分隔符（文件截断）"
+                )
             if not plus.startswith("+"):
-                raise ValueError(f"FASTQ 格式错误: 期望 '+' 分隔符, 得到: {plus.rstrip(chr(10))!r}（序列可能跨行）")
+                raise ValueError(
+                    f"FASTQ 格式错误: 期望 '+' 分隔符, 得到: {plus.rstrip(chr(10))!r}（序列可能跨行）"
+                )
             quality = f.readline()
             if not quality:
-                raise ValueError(f"FASTQ 格式错误: 记录 {header_line[1:]!r} 缺少质量行（文件截断）")
+                raise ValueError(
+                    f"FASTQ 格式错误: 记录 {header_line[1:]!r} 缺少质量行（文件截断）"
+                )
 
             seq = seq.rstrip("\n")
             quality = quality.rstrip("\n")

@@ -3,18 +3,18 @@
 import asyncio
 from pathlib import Path
 
-from seqviz.browser import FileFormat
-from seqviz.file_browser import (
-    FileBrowser,
+import pytest
+
+from seqviz.core.files import (
     FileInfo,
     count_sequences,
-    detect_file_format,
-    format_size,
     is_sequence_file,
     scan_directory,
 )
+from seqviz.core.formats import FileFormat, detect_format
+from seqviz.ui.files import FileBrowser, FilePreview, format_size
 
-TEST_DIR = Path(__file__).parent
+TEST_DIR = Path(__file__).resolve().parents[1] / "data"
 
 
 def run(coro):
@@ -64,18 +64,18 @@ class TestFileDetection:
     def test_detect_format_fasta(self, tmp_path):
         f = tmp_path / "seq.fasta"
         f.write_text(">s\nAT\n")
-        assert detect_file_format(f) == FileFormat.FASTA
+        assert detect_format(f) == FileFormat.FASTA
 
     def test_detect_format_fastq(self, tmp_path):
         f = tmp_path / "reads.fastq"
         f.write_text("@r\nAT\n+\nII\n")
-        assert detect_file_format(f) == FileFormat.FASTQ
+        assert detect_format(f) == FileFormat.FASTQ
 
     def test_detect_format_by_content(self, tmp_path):
         # 后缀不明确，靠首字符判断
         f = tmp_path / "data.xyz"
         f.write_text("@r\nAT\n+\nII\n")
-        assert detect_file_format(f) == FileFormat.FASTQ
+        assert detect_format(f) == FileFormat.FASTQ
 
 
 class TestScanDirectory:
@@ -97,7 +97,7 @@ class TestScanDirectory:
         # 每个文件有大小和格式
         for f in files:
             assert f.size >= 0
-            assert f.fmt in (FileFormat.FASTA, FileFormat.FASTQ)
+            assert f.fmt in (FileFormat.FASTA, FileFormat.FASTQ, FileFormat.VCF)
 
     def test_scan_empty_dir(self, tmp_path):
         assert scan_directory(tmp_path) == []
@@ -126,6 +126,7 @@ class TestFileBrowserInteraction:
                 assert len(app.files) > 0
                 ol = app.query_one("#file-list")
                 assert ol.option_count == len(app.files)
+
         run(_t())
 
     def test_select_toggle(self):
@@ -140,6 +141,7 @@ class TestFileBrowserInteraction:
                 await pilot.press("space")  # 再按取消
                 await pilot.pause()
                 assert len(app.selected) == 0
+
         run(_t())
 
     def test_select_all(self):
@@ -153,6 +155,7 @@ class TestFileBrowserInteraction:
                 await pilot.press("a")  # 再按取消全选
                 await pilot.pause()
                 assert len(app.selected) == 0
+
         run(_t())
 
     def test_enter_opens_selected(self):
@@ -165,6 +168,7 @@ class TestFileBrowserInteraction:
                 await pilot.pause()
                 assert len(app.return_value) == 1
                 assert isinstance(app.return_value[0], Path)
+
         run(_t())
 
     def test_enter_without_selection_opens_highlighted(self):
@@ -175,6 +179,7 @@ class TestFileBrowserInteraction:
                 await pilot.press("enter")  # 无多选，打开高亮项
                 await pilot.pause()
                 assert len(app.return_value) == 1
+
         run(_t())
 
     def test_multi_select_opens_multiple(self):
@@ -188,6 +193,7 @@ class TestFileBrowserInteraction:
                 await pilot.press("enter")
                 await pilot.pause()
                 assert len(app.return_value) == 2
+
         run(_t())
 
     def test_quit_cancels(self):
@@ -198,6 +204,7 @@ class TestFileBrowserInteraction:
                 await pilot.press("q")
                 await pilot.pause()
                 assert app.return_value == []
+
         run(_t())
 
     def test_navigation_moves_highlight(self):
@@ -210,6 +217,7 @@ class TestFileBrowserInteraction:
                 await pilot.press("j")
                 await pilot.pause()
                 assert ol.highlighted == initial + 1
+
         run(_t())
 
 
@@ -217,10 +225,45 @@ class TestFileBrowserInteraction:
 # 序列计数（预览面板数据来源）
 # ──────────────────────────────────────────────
 class TestCountSequences:
+    def test_cancelled_count_does_not_read_first_record(self, tmp_path):
+        import threading
+
+        p = tmp_path / "cancelled.fa"
+        p.write_text(">s\nACGT\n")
+        cancel = threading.Event()
+        cancel.set()
+        assert count_sequences(p, FileFormat.FASTA, cancel) == 0
+
+    def test_unwrapped_fasta_count_uses_bounded_reads(self, tmp_path, monkeypatch):
+        from seqviz.core import index
+
+        p = tmp_path / "unwrapped.fa"
+        p.write_bytes(b">long\n" + b"A" * (2 * 1024 * 1024) + b"\n>short\nGC\n")
+        original_open = open
+
+        class BoundedReader:
+            def __init__(self, *args, **kwargs):
+                self.file = original_open(*args, **kwargs)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.file.close()
+
+            def __iter__(self):
+                return iter(self.readline, b"")
+
+            def readline(self, size=-1):
+                assert 0 < size <= 64 * 1024, "preview read an unbounded physical line"
+                return self.file.readline(size)
+
+        monkeypatch.setattr(index, "open_seq_file", BoundedReader)
+        assert count_sequences(p, FileFormat.FASTA) == 2
+
     def test_count_fasta(self, tmp_path):
         import threading
 
-        from seqviz.file_browser import count_sequences
         p = tmp_path / "x.fa"
         p.write_text("".join(f">s{i}\nACGT\n" for i in range(7)))
         assert count_sequences(p, FileFormat.FASTA) == 7
@@ -228,7 +271,6 @@ class TestCountSequences:
         assert count_sequences(p, FileFormat.FASTA, threading.Event()) == 7
 
     def test_count_fastq(self, tmp_path):
-        from seqviz.file_browser import count_sequences
         p = tmp_path / "x.fastq"
         p.write_text("".join(f"@r{i}\nACGT\n+\nIIII\n" for i in range(5)))
         assert count_sequences(p, FileFormat.FASTQ) == 5
@@ -236,29 +278,57 @@ class TestCountSequences:
     def test_count_gzip(self, tmp_path):
         import gzip
 
-        from seqviz.file_browser import count_sequences
         p = tmp_path / "x.fa.gz"
         with gzip.open(p, "wt") as f:
             f.write("".join(f">s{i}\nACGT\n" for i in range(3)))
         assert count_sequences(p, FileFormat.FASTA) == 3
 
     def test_count_empty_file(self, tmp_path):
-        from seqviz.file_browser import count_sequences
         p = tmp_path / "empty.fa"
         p.write_text("")
         assert count_sequences(p, FileFormat.FASTA) == 0
 
-    def test_count_missing_file_returns_zero(self, tmp_path):
-        from seqviz.file_browser import count_sequences
-        assert count_sequences(tmp_path / "nope.fa", FileFormat.FASTA) == 0
+    def test_count_missing_file_raises(self, tmp_path):
+        with pytest.raises(OSError):
+            count_sequences(tmp_path / "nope.fa", FileFormat.FASTA)
 
     def test_cancel_event_interrupts_large_count(self, tmp_path):
         """取消事件置位后应尽早中断（返回值小于完整计数）。"""
         import threading
 
-        from seqviz.file_browser import count_sequences
         p = tmp_path / "big.fa"
         p.write_text("".join(f">s{i}\nA\n" for i in range(20000)))
         ev = threading.Event()
         ev.set()
         assert count_sequences(p, FileFormat.FASTA, ev) < 20000
+
+
+class TestFileReadErrors:
+    def test_count_error_is_visible_in_preview(self, tmp_path, monkeypatch):
+        from seqviz.ui import files
+
+        path = tmp_path / "unreadable.fa"
+        path.write_text(">seq\nACGT\n")
+
+        def fail_count(*args):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(files, "count_sequences", fail_count)
+
+        async def check():
+            app = FileBrowser(tmp_path)
+            notifications = []
+            monkeypatch.setattr(
+                app, "notify", lambda message, **kwargs: notifications.append(message)
+            )
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+                assert app.files[0].seq_count is None
+                assert not app._counting
+                assert "permission denied" in str(
+                    app.query_one("#preview", FilePreview).render()
+                )
+                assert any("permission denied" in message for message in notifications)
+
+        run(check())

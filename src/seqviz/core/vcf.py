@@ -2,7 +2,7 @@
 
 支持未压缩纯文本 VCF v4.x。采用懒扫描策略：
 扫描只解析前 8 列（含 INFO），样本基因型按需 seek 回读。
-全链路二进制模式：扫描避免解码样本列（提速 ~3x），offset 为字节偏移。
+扫描使用二进制模式，只解码前 8 列；offset 为字节偏移。
 """
 
 import re
@@ -39,52 +39,70 @@ def parse_coord_query(text: str) -> tuple[str, int, int | None] | None:
     return chrom, start, end
 
 
+def chrom_sort_key(chrom: str):
+    """数字感知排序，并保留原名以区分 chr1 与 chr01 等不同 contig。"""
+    natural = tuple(
+        int(p) if p.isdigit() else p for p in re.split(r"(\d+)", chrom.lower())
+    )
+    return natural, chrom
+
+
 class VariantType(Enum):
-    TRANSITION = "transition"      # 转换（嘌呤↔嘌呤 / 嘧啶↔嘧啶）
+    TRANSITION = "transition"  # 转换（嘌呤↔嘌呤 / 嘧啶↔嘧啶）
     TRANSVERSION = "transversion"  # 颠换
-    INSERTION = "insertion"        # 插入
-    DELETION = "deletion"          # 缺失
-    COMPLEX = "complex"            # 复杂变异
+    INSERTION = "insertion"  # 插入
+    DELETION = "deletion"  # 缺失
+    COMPLEX = "complex"  # 复杂变异
 
 
 @dataclass
 class Variant:
     chrom: str
     pos: int
-    id: str                     # "." 存为 ""
+    id: str  # "." 存为 ""
     ref: str
     alt: str
-    qual: float | None          # "." 或非数字存为 None
+    qual: float | None  # "." 或非数字存为 None
     filter: str
-    info: dict = field(default_factory=dict)      # 懒扫描时已含 INFO（第8列）
+    info: dict = field(default_factory=dict)  # 懒扫描时已含 INFO（第8列）
     format_fields: list = field(default_factory=list)  # 懒扫描为空，按需填充
-    samples: dict = field(default_factory=dict)   # 同上
-    offset: int = 0             # 行首字节偏移（seek 回读用）
-    raw: str = ""               # 完整原始行，按需填充，y 键复制用
+    samples: dict = field(default_factory=dict)  # 同上
+    offset: int = 0  # 行首字节偏移（seek 回读用）
+    raw: str = ""  # 完整原始行，按需填充，y 键复制用
 
 
 @dataclass
 class VcfMeta:
     fileformat: str = ""
-    contigs: dict = field(default_factory=dict)      # ID → length
-    info_defs: dict = field(default_factory=dict)    # ID → Description
+    contigs: dict = field(default_factory=dict)  # ID → length
+    info_defs: dict = field(default_factory=dict)  # ID → Description
     format_defs: dict = field(default_factory=dict)
     filter_defs: dict = field(default_factory=dict)
     samples: list = field(default_factory=list)
-    has_header: bool = False    # 是否存在 #CHROM 表头行（无效文件判定的依据）
+    has_header: bool = False  # 是否存在 #CHROM 表头行（无效文件判定的依据）
 
 
 def classify_variant(ref: str, alt: str) -> VariantType:
     """按 REF/ALT 长度与碱基判定变异类型；多等位取第一个 ALT。
 
-    符号等位基因（<DEL>/<INS>/*）判为 COMPLEX，避免污染 SNP/InDel 计数与 Ts/Tv。
+    符号等位基因和 breakend 判为 COMPLEX，不计入 SNP/InDel 与 Ts/Tv。
     """
     first_alt = alt.split(",")[0]
-    if first_alt.startswith("<") or first_alt in ("*", ".") or "[" in first_alt or "]" in first_alt:
+    if (
+        first_alt.startswith(("<", "."))
+        or first_alt.endswith(".")
+        or first_alt == "*"
+        or "[" in first_alt
+        or "]" in first_alt
+    ):
         return VariantType.COMPLEX
     ref_u, alt_u = ref.upper(), first_alt.upper()
     if len(ref) == 1 and len(first_alt) == 1:
-        return VariantType.TRANSITION if (ref_u, alt_u) in _TRANSITIONS else VariantType.TRANSVERSION
+        return (
+            VariantType.TRANSITION
+            if (ref_u, alt_u) in _TRANSITIONS
+            else VariantType.TRANSVERSION
+        )
     if len(first_alt) > len(ref):
         return VariantType.INSERTION
     if len(ref) > len(first_alt):
@@ -153,7 +171,7 @@ def _parse_info(info_str: str) -> dict:
             k, v = item.split("=", 1)
             info[k] = v
         else:
-            info[item] = ""   # Flag 型（如 DB）
+            info[item] = ""  # Flag 型（如 DB）
     return info
 
 
@@ -176,18 +194,21 @@ def _index_line(line: bytes, offset: int) -> Variant | None:
             pass
     vid = parts[2].decode("utf-8", "replace")
     return Variant(
-        chrom=parts[0].decode("utf-8", "replace"), pos=pos,
+        chrom=parts[0].decode("utf-8", "replace"),
+        pos=pos,
         id="" if vid == "." else vid,
         ref=parts[3].decode("utf-8", "replace"),
         alt=parts[4].decode("utf-8", "replace"),
-        qual=qual, filter=parts[6].decode("utf-8", "replace"),
+        qual=qual,
+        filter=parts[6].decode("utf-8", "replace"),
         info=_parse_info(parts[7].decode("utf-8", "replace")),
         offset=offset,
     )
 
 
-def parse_variant_line(line: str, offset: int = 0,
-                       sample_names: list[str] | None = None) -> Variant | None:
+def parse_variant_line(
+    line: str, offset: int = 0, sample_names: list[str] | None = None
+) -> Variant | None:
     """完整解析单条数据行；畸形行（<8 列或 POS 非整数）返回 None。
 
     注意同时去除 \\r\\n：CRLF 行尾文件的 \\r 若残留会污染 raw（y 复制）
@@ -215,12 +236,18 @@ def parse_variant_line(line: str, offset: int = 0,
         name = names[i] if i < len(names) else f"sample{i + 1}"
         samples[name] = s
     return Variant(
-        chrom=parts[0], pos=pos,
+        chrom=parts[0],
+        pos=pos,
         id="" if parts[2] == "." else parts[2],
-        ref=parts[3], alt=parts[4],
-        qual=qual, filter=parts[6],
-        info=info, format_fields=format_fields,
-        samples=samples, offset=offset, raw=raw,
+        ref=parts[3],
+        alt=parts[4],
+        qual=qual,
+        filter=parts[6],
+        info=info,
+        format_fields=format_fields,
+        samples=samples,
+        offset=offset,
+        raw=raw,
     )
 
 
@@ -270,8 +297,9 @@ def scan_vcf_quick(path, limit: int = 5000) -> tuple[VcfMeta, list[Variant], int
     return meta, variants, skipped, cont_offset
 
 
-def scan_vcf_resume(path, cont_offset: int, on_batch=None,
-                    callback_interval: float = 0.5) -> tuple[list[Variant], int]:
+def scan_vcf_resume(
+    path, cont_offset: int, on_batch=None, callback_interval: float = 0.5
+) -> tuple[list[Variant], int]:
     """从 cont_offset 续扫到文件末尾（供后台线程调用）。
 
     on_batch(new_variants) 按时间节流回调（距上次 >= callback_interval 秒，
@@ -279,6 +307,7 @@ def scan_vcf_resume(path, cont_offset: int, on_batch=None,
     中断：on_batch 抛 StopIteration 时提前结束。
     """
     import time as _time
+
     variants: list[Variant] = []
     skipped = 0
     last_cb_len = 0
@@ -298,9 +327,7 @@ def scan_vcf_resume(path, cont_offset: int, on_batch=None,
                 skipped += 1
                 continue
             variants.append(v)
-            # 固定低占空比让出 GIL：实测扫描循环的 C 函数段长时间独占 GIL，
-            # 短 sleep（≤20ms）无法为 UI 线程赢得时间片（按键延迟 2s）；
-            # 25ms/1000 行实测 UI 恢复 106-256ms/键，扫描总耗时后台可接受
+            # 每 1000 条让出 GIL，给 UI 线程处理事件。
             since_yield += 1
             if since_yield >= 1000:
                 since_yield = 0
@@ -322,7 +349,9 @@ def scan_vcf_resume(path, cont_offset: int, on_batch=None,
     return variants, skipped
 
 
-def load_variant_detail(path, variant: Variant, sample_names: list[str], fh=None) -> Variant:
+def load_variant_detail(
+    path, variant: Variant, sample_names: list[str], fh=None
+) -> Variant:
     """seek(offset) 回读完整行，填充 format_fields/samples/raw（原地修改并返回）。
 
     二进制读取 + 单行解码；传入 fh（已打开二进制句柄）可复用避免重复 open。
@@ -339,7 +368,9 @@ def load_variant_detail(path, variant: Variant, sample_names: list[str], fh=None
     else:
         with open(path, "rb") as f:
             line = _read(f)
-    full = parse_variant_line(line.decode("utf-8", "replace"), variant.offset, sample_names)
+    full = parse_variant_line(
+        line.decode("utf-8", "replace"), variant.offset, sample_names
+    )
     if full is not None:
         variant.format_fields = full.format_fields
         variant.samples = full.samples

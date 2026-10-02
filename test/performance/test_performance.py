@@ -6,7 +6,9 @@ import time
 
 import pytest
 
-from seqviz.browser import FastaBrowser
+from seqviz.core.formats import detect_format
+from seqviz.core.index import scan_file
+from seqviz.ui.sequence.app import FastaBrowser
 
 random.seed(42)
 BASES = "ATCG"
@@ -46,7 +48,7 @@ def long_fasta(tmp_path_factory):
         for i in range(3):
             seq = "".join(random.choices(BASES, k=500_000))
             f.write(f">long_{i}\n")
-            f.writelines(seq[j:j + 70] + "\n" for j in range(0, len(seq), 70))
+            f.writelines(seq[j : j + 70] + "\n" for j in range(0, len(seq), 70))
     return p
 
 
@@ -58,7 +60,7 @@ def huge_fasta(tmp_path_factory):
     seq = "".join(random.choices(BASES, k=2_000_004))
     with open(p, "w") as f:
         f.write(">huge\n")
-        f.writelines(seq[j:j + 70] + "\n" for j in range(0, len(seq), 70))
+        f.writelines(seq[j : j + 70] + "\n" for j in range(0, len(seq), 70))
     # 返回 (路径, 序列)，供内容断言
     return p, seq
 
@@ -66,21 +68,21 @@ def huge_fasta(tmp_path_factory):
 class TestScanPerformance:
     def test_scan_many_sequences(self, big_fasta):
         t0 = time.perf_counter()
-        seqs = FastaBrowser._scan_file(big_fasta, FastaBrowser._detect_format(big_fasta))
+        seqs = scan_file(big_fasta, detect_format(big_fasta))
         elapsed = (time.perf_counter() - t0) * 1000
         assert len(seqs) == 5000
         assert elapsed < 500, f"扫描 5000 条序列耗时 {elapsed:.0f}ms，超过 500ms"
 
     def test_scan_many_reads(self, big_fastq):
         t0 = time.perf_counter()
-        seqs = FastaBrowser._scan_file(big_fastq, FastaBrowser._detect_format(big_fastq))
+        seqs = scan_file(big_fastq, detect_format(big_fastq))
         elapsed = (time.perf_counter() - t0) * 1000
         assert len(seqs) == 20000
         assert elapsed < 1000, f"扫描 20000 reads 耗时 {elapsed:.0f}ms，超过 1000ms"
 
     def test_scan_long_sequences(self, long_fasta):
         t0 = time.perf_counter()
-        seqs = FastaBrowser._scan_file(long_fasta, FastaBrowser._detect_format(long_fasta))
+        seqs = scan_file(long_fasta, detect_format(long_fasta))
         elapsed = (time.perf_counter() - t0) * 1000
         assert len(seqs) == 3
         assert elapsed < 500, f"扫描超长序列耗时 {elapsed:.0f}ms，超过 500ms"
@@ -89,6 +91,7 @@ class TestScanPerformance:
 class TestLoadPerformance:
     def test_load_long_sequence_fast(self, long_fasta):
         """加载 500K bp 序列应在合理时间内完成（seek 定位）。"""
+
         async def _t():
             app = FastaBrowser([long_fasta])
             async with app.run_test(size=(100, 30)) as pilot:
@@ -98,12 +101,14 @@ class TestLoadPerformance:
                 t0 = time.perf_counter()
                 mv.load_sequence(tab.sequences[1])  # 加载第2条
                 elapsed = (time.perf_counter() - t0) * 1000
-                assert len(mv._seq) == 500_000
+                assert len(mv.reader.sequence) == 500_000
                 assert elapsed < 200, f"加载 500K bp 耗时 {elapsed:.0f}ms，超过 200ms"
+
         asyncio.run(_t())
 
     def test_load_middle_sequence_uses_seek(self, big_fasta):
         """加载中间位置的序列不应明显慢于第一条（O(1) seek）。"""
+
         async def _t():
             app = FastaBrowser([big_fasta])
             async with app.run_test(size=(100, 30)) as pilot:
@@ -115,12 +120,14 @@ class TestLoadPerformance:
                 mv.load_sequence(tab.sequences[2500])
                 elapsed = (time.perf_counter() - t0) * 1000
                 assert elapsed < 100, f"加载中间序列耗时 {elapsed:.0f}ms，seek 可能失效"
+
         asyncio.run(_t())
 
 
 class TestScrollPerformance:
     def test_scroll_smooth(self, long_fasta):
         """滚动应流畅（每次 < 20ms）。"""
+
         async def _t():
             app = FastaBrowser([long_fasta])
             async with app.run_test(size=(100, 30)) as pilot:
@@ -132,10 +139,12 @@ class TestScrollPerformance:
                 elapsed = (time.perf_counter() - t0) * 1000
                 per_scroll = elapsed / 50
                 assert per_scroll < 20, f"平均滚动耗时 {per_scroll:.1f}ms/次，超过 20ms"
+
         asyncio.run(_t())
 
     def test_scroll_boundary_no_wasted_render(self, long_fasta):
         """到达边界后继续滚动不应触发重绘（offset 不变）。"""
+
         async def _t():
             app = FastaBrowser([long_fasta])
             async with app.run_test(size=(100, 30)) as pilot:
@@ -145,6 +154,7 @@ class TestScrollPerformance:
                 mv.view_offset = 0
                 mv.scroll_content_up(5)  # 已在顶部，offset 应保持 0
                 assert mv.view_offset == 0
+
         asyncio.run(_t())
 
 
@@ -167,11 +177,20 @@ class TestHugeSequenceCorrectness:
                 # 性能：2Mbp 加载（含一次全长扫描）应在合理时间内完成
                 assert elapsed < 1000, f"加载 2Mbp 耗时 {elapsed:.0f}ms，超过 1000ms"
                 # 正确性：进入分块模式且长度准确
-                assert mv._is_large
-                assert mv._seq_length == len(seq)
+                assert mv.reader.is_large
+                assert mv.reader.length == len(seq)
                 # 内容：首/中/末/随机窗口抽查
-                for start in (0, len(seq) // 2, len(seq) - 600, random.randint(0, len(seq) - 600)):
-                    assert mv._load_chunk(start, start + 600) == seq[start:start + 600]
+                for start in (
+                    0,
+                    len(seq) // 2,
+                    len(seq) - 600,
+                    random.randint(0, len(seq) - 600),
+                ):
+                    assert (
+                        mv.reader.read_range(start, start + 600)
+                        == seq[start : start + 600]
+                    )
+
         asyncio.run(_t())
 
     def test_huge_scroll_content_correct(self, huge_fasta):
@@ -189,6 +208,7 @@ class TestHugeSequenceCorrectness:
                 # 验证中部几个 wrap 窗口的碱基与原序列一致
                 mid = len(seq) // 2
                 for off in (0, mv.WRAP, 2 * mv.WRAP):
-                    got = mv._load_chunk(mid + off, mid + off + mv.WRAP)
-                    assert got == seq[mid + off:mid + off + mv.WRAP]
+                    got = mv.reader.read_range(mid + off, mid + off + mv.WRAP)
+                    assert got == seq[mid + off : mid + off + mv.WRAP]
+
         asyncio.run(_t())

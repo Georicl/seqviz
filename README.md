@@ -8,7 +8,7 @@
 
 [安装](#安装) · [快速开始](#快速开始) · [浏览器](#交互式浏览器) · [配置](#配置)
 
-<sup>v0.7.0rc2 · Python >= 3.14</sup>
+<sup>v0.7.0 · Python >= 3.14</sup>
 
 </div>
 
@@ -208,8 +208,39 @@ Apple Silicon + SMB 网络卷实测：
 ```bash
 git clone https://github.com/Georicl/seqviz.git && cd seqviz
 uv sync
-uv run pytest test/ -v          # 333 个测试
+uv run pytest test/ -x -q --tb=short
+uvx ruff@0.16.3 check src/ test/
+uv build
 ```
+
+### 代码结构
+
+```text
+src/seqviz/
+├── cli.py                  # 命令路由与终端输出
+├── config.py               # 用户配置加载与校验
+├── clipboard.py            # 系统剪贴板与 OSC 52
+├── core/                   # 格式、索引、区间读取、统计；不依赖界面
+│   ├── formats.py          # 文件识别与 gzip 打开
+│   ├── index.py            # 序列元信息、首屏快扫、可取消的完整扫描
+│   ├── sequence_reader.py  # 序列读取、行宽索引与一屏缓冲
+│   ├── fasta.py / fastq.py  # 流式记录解析
+│   ├── vcf.py              # VCF 解析、分类、懒加载与统计
+│   ├── files.py            # 目录发现与记录计数
+│   └── stats.py / seq_type.py
+└── ui/
+    ├── sequence/           # FASTA/FASTQ：app 控制器、view 内容、widgets 控件
+    ├── variants/           # VCF：app 控制器、widgets 控件
+    ├── files.py            # 目录选择与预览
+    ├── renderer.py         # Rich 着色与标尺
+    └── theme.py            # 主题与 Textual CSS
+```
+
+数据处理放在 `core`，界面通过它取得记录和序列区间。`SequenceReader` 管理文件句柄和有限缓冲；`SequenceView` 负责换行、着色和可见行。后台扫描把批次交给主线程更新控件，取消检查在读取块之间执行。
+
+FASTA 区间读取使用 0-based、右端不包含的坐标；界面的范围复制使用 1-based、两端包含的坐标，在调用读取器前转换。VCF 的位置从解析到显示都保持 1-based。gzip 读取支持顺序扫描，随机 seek 仍需要解压中间数据。
+
+测试按 `test/core/`、`test/ui/`、`test/cli/`、`test/performance/` 分类，公共样例位于 `test/data/`。单元测试使用小型生成数据；GB 级手工基准由 `test/performance/gen_perf_data.py` 和 `run_perf_test.py` 配套执行。
 
 ## License
 

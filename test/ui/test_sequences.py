@@ -6,15 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from seqviz.browser import (
-    FastaBrowser,
-    FileFormat,
-    SequenceInfo,
-    SequenceList,
-    SequenceView,
-)
+from seqviz.core.formats import FileFormat
+from seqviz.core.index import SequenceInfo, scan_file, scan_file_quick
+from seqviz.core.sequence_reader import SequenceReader
+from seqviz.ui.sequence.app import FastaBrowser
+from seqviz.ui.sequence.view import SequenceView
+from seqviz.ui.sequence.widgets import SequenceList
 
-TEST_DIR = Path(__file__).parent
+TEST_DIR = Path(__file__).resolve().parents[1] / "data"
 TEST_FA = TEST_DIR / "test.fa"
 TEST_FASTQ = TEST_DIR / "test_fastq.fastq"
 TEST_PROTEIN = TEST_DIR / "test_protein.fa"
@@ -34,8 +33,9 @@ class TestBrowserLaunch:
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
                 mv = app.query_one("#main-0")
-                assert mv._seq != ""  # 第一条序列已加载
+                assert mv.reader.sequence != ""  # 第一条序列已加载
                 assert app.current_tab.current_index == 0
+
         run(_t())
 
     def test_launch_with_fastq(self):
@@ -44,8 +44,9 @@ class TestBrowserLaunch:
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
                 mv = app.query_one("#main-0")
-                assert mv._seq != ""
-                assert mv._quality != ""  # FASTQ 有质量值
+                assert mv.reader.sequence != ""
+                assert mv.reader.quality != ""  # FASTQ 有质量值
+
         run(_t())
 
     def test_sequence_count_indexed(self):
@@ -54,6 +55,7 @@ class TestBrowserLaunch:
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
                 assert len(app.current_tab.sequences) == 2  # test.fa 有 2 条
+
         run(_t())
 
 
@@ -70,6 +72,7 @@ class TestNavigation:
                 await pilot.press("n")
                 await pilot.pause()
                 assert app.current_tab.current_index == 1
+
         run(_t())
 
     def test_prev_sequence_at_start_stays(self):
@@ -80,6 +83,7 @@ class TestNavigation:
                 await pilot.press("p")  # 已在第一条
                 await pilot.pause()
                 assert app.current_tab.current_index == 0
+
         run(_t())
 
     def test_next_at_end_stays(self):
@@ -91,11 +95,14 @@ class TestNavigation:
                 await pilot.press("n")  # 超出最后一条
                 await pilot.pause()
                 assert app.current_tab.current_index == 1  # 停在最后
+
         run(_t())
 
     def test_scroll_changes_offset(self):
         async def _t():
-            app = FastaBrowser([Path(__file__).parent / "chr2.fa"])
+            app = FastaBrowser(
+                [(Path(__file__).resolve().parents[1] / "data") / "chr2.fa"]
+            )
             async with app.run_test(size=(100, 20)) as pilot:
                 await pilot.pause()
                 mv = app.query_one("#main-0")
@@ -103,6 +110,7 @@ class TestNavigation:
                 await pilot.press("j")
                 await pilot.pause()
                 assert mv.view_offset > initial
+
         run(_t())
 
 
@@ -119,10 +127,12 @@ class TestSearchGoto:
                 await pilot.press("/")
                 await pilot.pause()
                 assert app._get_command_bar() is not None
+
         run(_t())
 
     def test_command_bar_captures_input(self):
         """命令栏应能捕获输入的字符（值被记录）。"""
+
         async def _t():
             app = FastaBrowser([TEST_FA])
             async with app.run_test(size=(100, 30)) as pilot:
@@ -133,6 +143,7 @@ class TestSearchGoto:
                 await pilot.pause()
                 bar = app._get_command_bar()
                 assert bar.value == "2"
+
         run(_t())
 
     def test_goto_jumps_to_sequence(self):
@@ -146,6 +157,7 @@ class TestSearchGoto:
                 await pilot.pause()
                 assert app.current_tab.current_index == 1  # 第2条 (1-based)
                 assert app._get_command_bar() is None  # 已关闭
+
         run(_t())
 
     def test_search_finds_sequence(self):
@@ -159,6 +171,7 @@ class TestSearchGoto:
                 await pilot.press("enter")
                 await pilot.pause()
                 assert app.current_tab.current_index == 1  # chr2 是第2条
+
         run(_t())
 
     def test_escape_closes_command_bar(self):
@@ -172,6 +185,7 @@ class TestSearchGoto:
                 await pilot.press("escape")
                 await pilot.pause()
                 assert app._get_command_bar() is None
+
         run(_t())
 
 
@@ -183,10 +197,15 @@ class TestCopyExport:
         async def _t():
             copied = {}
             import seqviz.clipboard as cb
+
             def fake_run(cmd, input=None, check=False):
                 copied["data"] = input.decode() if input else ""
-                class R: pass
+
+                class R:
+                    pass
+
                 return R()
+
             monkeypatch.setattr(cb.subprocess, "run", fake_run)
             app = FastaBrowser([TEST_FA])
             async with app.run_test(size=(100, 30)) as pilot:
@@ -194,6 +213,7 @@ class TestCopyExport:
                 await pilot.press("y")
                 await pilot.pause()
             assert ">chr1" in copied.get("data", "")  # 复制了第一条序列
+
         run(_t())
 
     def test_export_creates_file(self, tmp_path, monkeypatch):
@@ -208,6 +228,7 @@ class TestCopyExport:
             assert len(exported) == 1
             content = exported[0].read_text()
             assert content.startswith(">chr1")
+
         run(_t())
 
 
@@ -223,6 +244,7 @@ class TestBackNavigation:
                 await pilot.press("B")
                 await pilot.pause()
                 assert app.return_value == "back"
+
         run(_t())
 
     def test_back_without_source_dir(self):
@@ -233,6 +255,7 @@ class TestBackNavigation:
                 await pilot.press("B")
                 await pilot.pause()
                 assert app.return_value is None  # 不返回
+
         run(_t())
 
 
@@ -246,6 +269,7 @@ class TestMultiTab:
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
                 assert len(app.file_tabs) == 2
+
         run(_t())
 
     def test_single_file_no_tabs(self):
@@ -254,6 +278,7 @@ class TestMultiTab:
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
                 assert len(app.file_tabs) == 1
+
         run(_t())
 
 
@@ -267,8 +292,10 @@ class TestProteinDetection:
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
                 mv = app.query_one("#main-0")
-                from seqviz.seq_type import SeqType
-                assert mv._seq_type == SeqType.PROTEIN
+                from seqviz.core.seq_type import SeqType
+
+                assert mv.reader.seq_type == SeqType.PROTEIN
+
         run(_t())
 
 
@@ -288,6 +315,7 @@ class TestNavigationExtras:
                 await pilot.press("g")  # 跳到顶部
                 await pilot.pause()
                 assert mv.view_offset == 0
+
         run(_t())
 
     def test_page_down_up(self):
@@ -303,6 +331,7 @@ class TestNavigationExtras:
                 await pilot.press("b")  # 向上翻页
                 await pilot.pause()
                 assert mv.view_offset == initial
+
         run(_t())
 
 
@@ -319,6 +348,7 @@ class TestTabSwitch:
                 await pilot.press("tab")  # 循环回第一个
                 await pilot.pause()
                 assert app.active_tab == 0
+
         run(_t())
 
 
@@ -326,23 +356,32 @@ class TestRangeCopy:
     def test_range_copy_success(self, monkeypatch):
         async def _t():
             copied: list[str] = []
-            monkeypatch.setattr(FastaBrowser, "_copy_to_clipboard", lambda self, text: copied.append(text) or True)
+            monkeypatch.setattr(
+                FastaBrowser,
+                "_copy_to_clipboard",
+                lambda self, text: copied.append(text) or True,
+            )
             app = FastaBrowser([TEST_FA])
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
-                expected = app._get_main_view()._seq[0:4]
+                expected = app._get_main_view().reader.sequence[0:4]
                 await pilot.press("c")
                 for ch in "1-4":
                     await pilot.press(ch)
                 await pilot.press("enter")
                 await pilot.pause()
             assert copied == [expected]
+
         run(_t())
 
     def test_range_copy_out_of_bounds(self, monkeypatch):
         async def _t():
             copied: list[str] = []
-            monkeypatch.setattr(FastaBrowser, "_copy_to_clipboard", lambda self, text: copied.append(text) or True)
+            monkeypatch.setattr(
+                FastaBrowser,
+                "_copy_to_clipboard",
+                lambda self, text: copied.append(text) or True,
+            )
             app = FastaBrowser([TEST_FA])
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
@@ -352,12 +391,17 @@ class TestRangeCopy:
                 await pilot.press("enter")
                 await pilot.pause()
             assert copied == []  # 越界不复制
+
         run(_t())
 
     def test_range_copy_invalid_format(self, monkeypatch):
         async def _t():
             copied: list[str] = []
-            monkeypatch.setattr(FastaBrowser, "_copy_to_clipboard", lambda self, text: copied.append(text) or True)
+            monkeypatch.setattr(
+                FastaBrowser,
+                "_copy_to_clipboard",
+                lambda self, text: copied.append(text) or True,
+            )
             app = FastaBrowser([TEST_FA])
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
@@ -367,6 +411,7 @@ class TestRangeCopy:
                 await pilot.press("enter")
                 await pilot.pause()
             assert copied == []  # 非法格式不复制
+
         run(_t())
 
 
@@ -386,12 +431,14 @@ class TestEmptyFileSafety:
                 await pilot.press("y")  # 不应崩溃
                 await pilot.pause()
             assert list(tmp_path.glob("*.fasta")) == []  # 无序列可导出
+
         run(_t())
 
 
 class TestStatusBarLayout:
     def test_statusbar_visible_above_footer(self):
         """状态栏应可见且位于 Footer 上方（回归：两者同 dock:bottom 重叠遮挡）。"""
+
         async def _t():
             app = FastaBrowser([TEST_FA])
             async with app.run_test(size=(100, 30)) as pilot:
@@ -403,13 +450,14 @@ class TestStatusBarLayout:
                 assert sb_region.height >= 1 and sb_region.width > 0
                 # 状态栏整体位于 Footer 上方，无重叠
                 assert sb_region.y + sb_region.height <= ft_region.y
+
         run(_t())
 
 
 class TestHelpScreen:
     def test_help_shows_all_keys(self):
         """? 打开帮助面板，应包含全部已声明快捷键（含 y/c/B/Tab）。"""
-        from seqviz.browser import HelpScreen
+        from seqviz.ui.sequence.widgets import HelpScreen
 
         async def _t():
             app = FastaBrowser([TEST_FA])
@@ -422,6 +470,7 @@ class TestHelpScreen:
                         break
                 assert isinstance(app.screen, HelpScreen)
                 from textual.css.query import NoMatches
+
                 panel = None
                 for _ in range(20):  # 等待模态屏幕内面板挂载就绪
                     await pilot.pause()
@@ -432,13 +481,19 @@ class TestHelpScreen:
                         continue
                 assert panel is not None
                 text = str(panel.render())
-                for key_desc in ("复制当前序列", "范围复制", "返回文件选择器", "切换文件标签页"):
+                for key_desc in (
+                    "复制当前序列",
+                    "范围复制",
+                    "返回文件选择器",
+                    "切换文件标签页",
+                ):
                     assert key_desc in text
+
         run(_t())
 
     def test_q_closes_help_not_exit(self):
         """帮助面板打开时按 q 应关闭面板而非退出浏览器（回归用户报告的 bug）。"""
-        from seqviz.browser import HelpScreen
+        from seqviz.ui.sequence.widgets import HelpScreen
 
         async def _t():
             app = FastaBrowser([TEST_FA])
@@ -453,11 +508,12 @@ class TestHelpScreen:
                 app.query_one("#main-0")  # 应用仍在运行
                 await pilot.press("q")  # 再按才退出
                 await pilot.pause()
+
         run(_t())
 
     def test_tab_does_not_switch_while_help_open(self):
         """帮助面板打开时按 Tab 不应在背后切换标签页。"""
-        from seqviz.browser import HelpScreen
+        from seqviz.ui.sequence.widgets import HelpScreen
 
         async def _t():
             app = FastaBrowser([TEST_FA, TEST_FASTQ])
@@ -469,6 +525,7 @@ class TestHelpScreen:
                 await pilot.press("tab")
                 await pilot.pause()
                 assert app.active_tab == 0  # 未切换
+
         run(_t())
 
 
@@ -478,6 +535,7 @@ class TestHelpScreen:
 class TestExportSafety:
     def test_export_twice_no_overwrite(self, tmp_path, monkeypatch):
         """重复导出同一序列应自动追加序号，不静默覆盖已有文件。"""
+
         async def _t():
             monkeypatch.chdir(tmp_path)
             app = FastaBrowser([TEST_FA])
@@ -489,6 +547,7 @@ class TestExportSafety:
                 await pilot.pause()
             names = sorted(p.name for p in tmp_path.glob("*.fasta"))
             assert names == ["chr1.fasta", "chr1_1.fasta"]
+
         run(_t())
 
     def test_export_sanitizes_illegal_chars(self, tmp_path, monkeypatch):
@@ -506,6 +565,7 @@ class TestExportSafety:
             exported = list(tmp_path.glob("*.fasta"))
             assert len(exported) == 1
             assert ":" not in exported[0].name and "|" not in exported[0].name
+
         run(_t())
 
 
@@ -524,12 +584,14 @@ class TestDuplicatePathScan:
                         break
             assert len(app.file_tabs[0].sequences) == 600
             assert len(app.file_tabs[1].sequences) == 600  # 不再停留在 500
+
         run(_t())
 
 
 class TestResizeClamp:
     def test_view_offset_clamped_after_wrap_change(self):
         """换行宽度变化（窗口加宽）后 view_offset 应钳制在有效范围，避免空白屏。"""
+
         async def _t():
             app = FastaBrowser([TEST_FA])
             async with app.run_test(size=(100, 30)) as pilot:
@@ -539,6 +601,7 @@ class TestResizeClamp:
                 view.WRAP = 5  # 强制 on_resize 认定宽度已变化并重算
                 view.on_resize(None)
                 assert view.view_offset <= max(0, view._total_lines - 1)
+
         run(_t())
 
 
@@ -555,6 +618,7 @@ class TestNonUtf8Header:
             seqs = app.file_tabs[0].sequences
             assert len(seqs) == 1
             assert "caf" in seqs[0].header  # 非法字节被替换，其余保留
+
         run(_t())
 
 
@@ -563,14 +627,14 @@ class TestTruncatedFastq:
         """截断的 FASTQ 不应产生空序列/空质量的幻影条目。"""
         p = tmp_path / "trunc.fastq"
         p.write_text("@r1\nACGT\n+\n")  # 缺质量行
-        seqs = FastaBrowser._scan_file(p, FileFormat.FASTQ)
+        seqs = scan_file(p, FileFormat.FASTQ)
         assert seqs == []
 
     def test_wellformed_still_scans(self, tmp_path):
         """完整记录的 FASTQ 扫描不受截断守卫影响。"""
         p = tmp_path / "ok.fastq"
         p.write_text("@r1\nACGT\n+\nIIII\n@r2\nGGCC\n+\nHHHH\n")
-        seqs = FastaBrowser._scan_file(p, FileFormat.FASTQ)
+        seqs = scan_file(p, FileFormat.FASTQ)
         assert len(seqs) == 2
 
     def test_invalid_separator_and_short_quality_rejected(self, tmp_path):
@@ -581,19 +645,21 @@ class TestTruncatedFastq:
             p = tmp_path / f"{name}.fastq"
             p.write_text(content)
             with pytest.raises(ValueError, match="FASTQ 格式错误"):
-                FastaBrowser._scan_file(p, FileFormat.FASTQ)
+                scan_file(p, FileFormat.FASTQ)
 
 
 class TestLargeFastaInitialDisplay:
     def test_quick_scan_stops_before_single_unwrapped_sequence_end(self, tmp_path):
         p = tmp_path / "single.fa"
         p.write_bytes(b">chr1\n" + b"A" * 2_000_000 + b"\n")
-        seqs, done = FastaBrowser._scan_file_quick(p, FileFormat.FASTA)
+        seqs, done = scan_file_quick(p, FileFormat.FASTA)
         assert len(seqs) == 1
         assert seqs[0].header == "chr1"
         assert done is False
 
-    def test_first_header_after_quick_scan_loads_when_background_finds_it(self, tmp_path):
+    def test_first_header_after_quick_scan_loads_when_background_finds_it(
+        self, tmp_path
+    ):
         p = tmp_path / "preamble.fa"
         p.write_bytes(b";" + b"x" * 1_100_000 + b"\n>chr1\nACGT\n")
 
@@ -606,7 +672,7 @@ class TestLargeFastaInitialDisplay:
                         break
                     await asyncio.sleep(0.02)
                 assert len(app.file_tabs[0].sequences) == 1
-                assert app.query_one("#main-0", SequenceView)._seq == "ACGT"
+                assert app.query_one("#main-0", SequenceView).reader.sequence == "ACGT"
 
         run(_t())
 
@@ -615,14 +681,16 @@ class TestLargeFastaInitialDisplay:
         p = tmp_path / "single.fa"
         p.write_text(f">chr1\n{seq}\n")
         release = threading.Event()
-        original = SequenceView._scan_fasta_metrics
+        original = SequenceReader.scan_fasta_metrics
 
         def delayed_metrics(f, seq_data_start, cancelled=None):
             if not release.wait(timeout=5):
                 raise AssertionError("metrics scan was not released")
             return original(f, seq_data_start, cancelled)
 
-        monkeypatch.setattr(SequenceView, "_scan_fasta_metrics", staticmethod(delayed_metrics))
+        monkeypatch.setattr(
+            SequenceReader, "scan_fasta_metrics", staticmethod(delayed_metrics)
+        )
         monkeypatch.setattr(FastaBrowser, "DEFER_METRICS_FILE_BYTES", 1)
 
         async def _t():
@@ -630,16 +698,16 @@ class TestLargeFastaInitialDisplay:
             try:
                 async with app.run_test(size=(100, 30)):
                     mv = app.query_one("#main-0", SequenceView)
-                    assert mv._metrics_pending
-                    assert mv._load_chunk(0, 40) == seq[:40]
+                    assert mv.reader.metrics_pending
+                    assert mv.reader.read_range(0, 40) == seq[:40]
                     release.set()
                     for _ in range(100):
-                        if not mv._metrics_pending:
+                        if not mv.reader.metrics_pending:
                             break
                         await asyncio.sleep(0.02)
-                    assert not mv._metrics_pending
-                    assert mv._seq_length == len(seq)
-                    assert mv._load_chunk(len(seq) - 40, len(seq)) == seq[-40:]
+                    assert not mv.reader.metrics_pending
+                    assert mv.reader.length == len(seq)
+                    assert mv.reader.read_range(len(seq) - 40, len(seq)) == seq[-40:]
             finally:
                 release.set()
 
@@ -653,35 +721,56 @@ class TestIssue4HandleCleanup:
     def test_sequence_view_closes_handle_on_unmount(self):
         """SequenceView 自身卸载时关闭持久句柄（App 级钩子触发时子组件已卸载）。"""
         captured = {}
+
         async def _t():
             app = FastaBrowser([TEST_FA])
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
                 mv = app.query_one("#main-0")
-                mv._get_fh()  # 确保持久句柄已打开
-                assert mv._fh is not None and not mv._fh.closed
+                mv.reader._get_fh()  # 确保持久句柄已打开
+                assert mv.reader._fh is not None and not mv.reader._fh.closed
                 captured["view"] = mv
+
         run(_t())
         # 退出后句柄应被关闭（close() 置 None）
-        assert captured["view"]._fh is None
+        assert captured["view"].reader._fh is None
 
     def test_all_views_closed_on_exit(self):
         """多文件标签页的所有 SequenceView 退出后句柄均关闭。"""
         captured = {}
+
         async def _t():
             app = FastaBrowser([TEST_FA, TEST_FASTQ])
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
                 views = list(app.query("SequenceView"))
                 for mv in views:
-                    mv._get_fh()
-                assert all(mv._fh is not None for mv in views)
+                    mv.reader._get_fh()
+                assert all(mv.reader._fh is not None for mv in views)
                 captured["views"] = views
+
         run(_t())
-        assert all(mv._fh is None for mv in captured["views"])
+        assert all(mv.reader._fh is None for mv in captured["views"])
 
 
 class TestIssue4BatchAppend:
+    def test_sequence_headers_are_literal_text(self, tmp_path):
+        """方括号属于输入标题，初始和后台追加都不能解析为 markup。"""
+        p = tmp_path / "brackets.fa"
+        p.write_text(">chr1[/wrong]\nACGT\n")
+
+        async def _t():
+            app = FastaBrowser([p])
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                sidebar = app.query_one("#sidebar-0", SequenceList)
+                assert sidebar.get_option_at_index(0).prompt.plain == " chr1[/wrong]"
+                sidebar.append_sequences([SequenceInfo(1, "[red]chr2[/red]", 0)])
+                await pilot.pause()
+                assert sidebar.get_option_at_index(1).prompt.plain == " [red]chr2[/red]"
+
+        run(_t())
+
     def test_append_sequences_batch_adds_all(self):
         """批量 add_options：append_sequences 一次性追加全部 Option。"""
         seqs = [SequenceInfo(i, f"seq{i}", i * 100, 50) for i in range(5)]

@@ -1,8 +1,6 @@
-"""目录序列文件浏览器：扫描目录中的序列文件，提供选择界面。"""
+"""目录文件选择器；后台计数，UI 线程更新预览和通知。"""
 
-import gzip
 import threading
-from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import ClassVar
@@ -15,85 +13,14 @@ from textual.widgets import Footer, Header, OptionList, Static
 from textual.widgets.option_list import Option
 
 from seqviz import config
-from seqviz.browser import FileFormat, detect_format
-from seqviz.theme import (
+from seqviz.core.files import FileInfo, count_sequences, scan_directory
+from seqviz.core.formats import FileFormat
+from seqviz.ui.theme import (
     build_file_browser_css,
     get_theme,
     get_theme_name,
     is_dark_theme,
 )
-
-
-def _get_seq_extensions() -> set:
-    """消费时读取支持的序列文件后缀（尊重 reload_config 的刷新契约）。"""
-    exts = config.get("file_browser.extensions", [])
-    return set(exts) if isinstance(exts, list) else set()
-
-
-def is_sequence_file(path: Path) -> bool:
-    """判断是否为序列文件（支持 .gz 双后缀；压缩 VCF 暂不支持不列出）。"""
-    if not path.is_file():
-        return False
-    exts = _get_seq_extensions()
-    if path.suffix.lower() == ".gz":
-        inner_suffix = Path(path.stem).suffix.lower()
-        return inner_suffix in exts and inner_suffix != ".vcf"
-    return path.suffix.lower() in exts
-
-
-def detect_file_format(path: Path) -> FileFormat:
-    """根据后缀或首字符检测文件格式（委托给 browser.detect_format 单一入口）。"""
-    return detect_format(path)
-
-
-def is_vcf_file(path: Path) -> bool:
-    """判断是否为未压缩 VCF 文件。"""
-    return path.is_file() and path.suffix.lower() == ".vcf"
-
-
-def count_sequences(path: Path, fmt: FileFormat, cancel_event: threading.Event | None = None) -> int:
-    """快速统计序列条数。FASTA 数 '>' 行，FASTQ 按 4 行一组，VCF 数非注释数据行。
-
-    cancel_event 置位时在读取间隙尽早中断（返回已统计部分），
-    避免 GB 级文件预览后退出时进程挂起直到整文件读完。
-    """
-    opener = gzip.open if path.suffix.lower() == ".gz" else open
-    count = 0
-    try:
-        if is_vcf_file(path):
-            # VCF: 数非 '#' 开头的非空行（即变异记录数）
-            lines = 0
-            with opener(path, "rb") as f:
-                for line in f:
-                    lines += 1
-                    if line and not line.startswith(b"#") and line.strip():
-                        count += 1
-                    if cancel_event is not None and lines % 16384 == 0 and cancel_event.is_set():
-                        return count
-        elif fmt == FileFormat.FASTQ:
-            # FASTQ: 按记录读取，忽略解析器允许的记录间空行。
-            with opener(path, "rb") as f:
-                while header := f.readline():
-                    if not header.strip():
-                        continue
-                    if not (f.readline() and f.readline() and f.readline()):
-                        break
-                    count += 1
-                    if cancel_event is not None and count % 4096 == 0 and cancel_event.is_set():
-                        return count
-        else:
-            # FASTA: 数以 '>' 开头的行
-            lines = 0
-            with opener(path, "rb") as f:
-                for line in f:
-                    lines += 1
-                    if line.startswith(b">"):
-                        count += 1
-                    if cancel_event is not None and lines % 16384 == 0 and cancel_event.is_set():
-                        return count
-    except OSError:
-        count = 0
-    return count
 
 
 def format_size(size_bytes: int) -> str:
@@ -107,49 +34,16 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes}B"
 
 
-@dataclass
-class FileInfo:
-    """序列文件的元信息。"""
-    path: Path
-    size: int
-    fmt: FileFormat
-    seq_count: int | None = None  # None=未统计；0=已统计且为空文件
-
-    @property
-    def name(self) -> str:
-        return self.path.name
-
-    @property
-    def size_str(self) -> str:
-        return format_size(self.size)
-
-
-def scan_directory(directory: Path) -> list[FileInfo]:
-    """扫描目录中的所有序列文件，返回按文件名排序的列表。"""
-    files: list[FileInfo] = []
-    for entry in sorted(directory.iterdir()):
-        if is_sequence_file(entry):
-            fmt = detect_file_format(entry)
-            info = FileInfo(
-                path=entry,
-                size=entry.stat().st_size,
-                fmt=fmt,
-            )
-            files.append(info)
-    return files
-
-
 class FilePreview(Static):
     """右侧文件预览面板。"""
 
-    def show_info(self, info: FileInfo | None):
+    def show_info(self, info: FileInfo | None, error: str | None = None):
         if info is None:
             self.update(Text("  无文件", style="dim"))
             return
 
-        is_vcf = is_vcf_file(info.path)
-        fmt_label = "VCF" if is_vcf else ("FASTQ" if info.fmt == FileFormat.FASTQ else "FASTA")
-        count_label = "变异数" if is_vcf else "序列数"
+        fmt_label = info.fmt.value.upper()
+        count_label = "变异数" if info.fmt == FileFormat.VCF else "序列数"
         content = Text()
         content.append("\n  文件详情\n\n", style="bold cyan")
         content.append("  名称: ", style="dim")
@@ -157,11 +51,13 @@ class FilePreview(Static):
         content.append("  路径: ", style="dim")
         content.append(f"{info.path}\n", style="green")
         content.append("  大小: ", style="dim")
-        content.append(f"{info.size_str}\n", style="yellow")
+        content.append(f"{format_size(info.size)}\n", style="yellow")
         content.append("  格式: ", style="dim")
         content.append(f"{fmt_label}\n", style="magenta")
         content.append(f"  {count_label}: ", style="dim")
-        if info.seq_count is None:
+        if error is not None:
+            content.append(f"读取失败: {error}\n", style="red")
+        elif info.seq_count is None:
             content.append("统计中...\n", style="dim")
         else:
             content.append(f"{info.seq_count:,}\n", style="bold green")
@@ -177,7 +73,7 @@ class FileBrowser(App):
 
     TITLE = "Seqviz"
     SUB_TITLE = "序列文件选择器"
-    # DARK/CSS 在导入时从主题单例取值；切换主题后需新建实例（见 theme.reset_theme 说明）
+    # 类样式在导入时生成；主题重载不修改已定义的类。
     DARK = is_dark_theme(get_theme_name())  # 根据主题自动切换
 
     CSS = build_file_browser_css(get_theme())
@@ -198,13 +94,17 @@ class FileBrowser(App):
         self.files: list[FileInfo] = []
         self.selected: set[int] = set()  # 多选索引集合
         self._preview_index = -1  # 当前预览的文件索引
-        self._count_cancelled = False  # 退出时置 True，计数线程不再回 UI 线程
-        self._count_cancel_event = threading.Event()  # 中断 count_sequences 的全文件读取
+        self._count_cancel_event = (
+            threading.Event()
+        )  # 中断 count_sequences 的全文件读取
+        self._count_errors: dict[int, str] = {}
         self._counting: set[int] = set()  # 正在计数的文件索引（去重，避免重复全量读取）
 
     def on_mount(self):
         # 扫描目录
-        self.files = scan_directory(self.directory)
+        self.files = scan_directory(
+            self.directory, config.get("file_browser.extensions")
+        )
         self._rebuild_list()
         # 高亮第一项并预览
         if self.files:
@@ -222,14 +122,14 @@ class FileBrowser(App):
                 label.append(" ✓ ", style="bold green")
             else:
                 label.append("   ", style="dim")
-            if is_vcf_file(info.path):
+            if info.fmt == FileFormat.VCF:
                 fmt_tag = "V"
             else:
                 fmt_tag = "Q" if info.fmt == FileFormat.FASTQ else "F"
             tag_style = {"Q": "cyan", "F": "magenta", "V": "green"}[fmt_tag]
             label.append(f"[{fmt_tag}] ", style=tag_style)
             label.append(info.name, style="bold")
-            label.append(f"  ({info.size_str})", style="dim")
+            label.append(f"  ({format_size(info.size)})", style="dim")
             option_list.add_option(Option(label, id=f"file-{i}"))
 
     def _update_preview(self, index: int):
@@ -238,35 +138,53 @@ class FileBrowser(App):
             return
         self._preview_index = index
         info = self.files[index]
-        self.query_one("#preview", FilePreview).show_info(info)
-        if info.seq_count is None and index not in self._counting:
+        self.query_one("#preview", FilePreview).show_info(
+            info, self._count_errors.get(index)
+        )
+        if (
+            info.seq_count is None
+            and index not in self._counting
+            and index not in self._count_errors
+        ):
             # 后台统计（thread worker），完成后回 UI 线程刷新预览；
             # _counting 去重避免导航事件重复派发全文件读取
             self._counting.add(index)
-            self.run_worker(partial(self._count_in_thread, index), thread=True, exclusive=False)
+            self.run_worker(
+                partial(self._count_in_thread, index), thread=True, exclusive=False
+            )
 
     def _count_in_thread(self, index: int):
-        """后台线程：统计序列数后回 UI 线程应用（避免阻塞事件循环）。"""
+        """读取错误与计数结果都交回 UI 线程，退出后停止投递。"""
         info = self.files[index]
-        count = count_sequences(info.path, info.fmt, self._count_cancel_event)
-        # 退出后不再向已关闭的事件循环投递回调
-        if not self._count_cancelled:
+        try:
+            count = count_sequences(info.path, info.fmt, self._count_cancel_event)
+            callback = partial(self._apply_seq_count, index, count)
+        except OSError as exc:
+            callback = partial(self._apply_count_error, index, str(exc))
+        if not self._count_cancel_event.is_set():
             try:
-                self.call_from_thread(self._apply_seq_count, index, count)
+                self.call_from_thread(callback)
             except RuntimeError:
-                pass  # 检查标志与投递之间应用恰好退出（App is not running）
+                pass  # 检查标志与投递之间应用可能已退出。
+
+    def _apply_count_error(self, index: int, error: str):
+        self._counting.discard(index)
+        self._count_errors[index] = error
+        self.notify(
+            f"{self.files[index].name}: {error}", title="读取失败", severity="error"
+        )
+        if index == self._preview_index:
+            self.query_one("#preview", FilePreview).show_info(self.files[index], error)
 
     def _apply_seq_count(self, index: int, count: int):
         """UI 线程：回填序列数，仅当该文件仍是当前预览时刷新。"""
         self._counting.discard(index)
-        if 0 <= index < len(self.files):
-            self.files[index].seq_count = count
-            if index == self._preview_index:
-                self.query_one("#preview", FilePreview).show_info(self.files[index])
+        self.files[index].seq_count = count
+        if index == self._preview_index:
+            self.query_one("#preview", FilePreview).show_info(self.files[index])
 
     def on_unmount(self):
         """退出时置取消标志：计数线程中断文件读取且不再投递 UI 更新。"""
-        self._count_cancelled = True
         self._count_cancel_event.set()
 
     def compose(self) -> ComposeResult:
@@ -288,7 +206,9 @@ class FileBrowser(App):
         option_list.action_cursor_up()
         self._update_preview(option_list.highlighted or 0)
 
-    def on_option_list_option_highlighted(self, message: OptionList.OptionHighlighted) -> None:
+    def on_option_list_option_highlighted(
+        self, message: OptionList.OptionHighlighted
+    ) -> None:
         """鼠标/键盘高亮变化时更新预览。"""
         option_id = message.option.id if message.option else None
         if option_id and option_id.startswith("file-"):

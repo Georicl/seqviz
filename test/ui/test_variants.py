@@ -1,14 +1,21 @@
 """VcfBrowser TUI 测试（对应 docs/superpowers/plans Task 6-8）。"""
+
 import asyncio
 from pathlib import Path
 
 import pytest
 from textual.widgets import OptionList
 
-from seqviz.vcf import Variant, load_variant_detail, scan_vcf_quick
-from seqviz.vcf_browser import AbsoluteScrollbar, DetailPanel, VcfBrowser
+from seqviz.core.vcf import (
+    Variant,
+    load_variant_detail,
+    scan_vcf_quick,
+    scan_vcf_resume,
+)
+from seqviz.ui.variants.app import VcfBrowser
+from seqviz.ui.variants.widgets import AbsoluteScrollbar, DetailPanel
 
-TEST_DIR = Path(__file__).parent
+TEST_DIR = Path(__file__).resolve().parents[1] / "data"
 SAMPLE_VCF = TEST_DIR / "sample.vcf"
 
 
@@ -27,6 +34,7 @@ class TestLaunch:
                 await pilot.pause()
                 ol = app.query_one("#variant-list", OptionList)
                 assert ol.option_count == 18
+
         run(_t())
 
     def test_detail_shows_first_variant(self):
@@ -37,18 +45,21 @@ class TestLaunch:
                 text = app._detail_text()
                 assert "10,234" in text  # 千分位坐标
                 assert "sample1" in text  # 逐样本基因型已加载
+
         run(_t())
 
     def test_empty_vcf_app_level_graceful(self, tmp_path):
         """App 层面对空文件仍可优雅打开（CLI 层拦截报错，见 test_cli）。"""
         f = tmp_path / "empty.vcf"
         f.write_text("")
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause()
                 ol = app.query_one("#variant-list", OptionList)
                 assert ol.option_count == 0
+
         run(_t())
 
 
@@ -69,6 +80,7 @@ class TestNavigation:
                 await pilot.press("k")
                 await pilot.pause()
                 assert ol.highlighted == 0
+
         run(_t())
 
     def test_g_G_jumps(self):
@@ -83,6 +95,7 @@ class TestNavigation:
                 await pilot.press("g")
                 await pilot.pause()
                 assert ol.highlighted == 0
+
         run(_t())
 
 
@@ -112,6 +125,7 @@ class TestFilterSort:
                 await pilot.press("f")  # 回到全部
                 await pilot.pause()
                 assert ol.option_count == 18
+
         run(_t())
 
     def test_sort_by_qual(self):
@@ -129,6 +143,7 @@ class TestFilterSort:
                 await pilot.press("s")
                 await pilot.pause()
                 assert app.sort_mode == "位置"
+
         run(_t())
 
 
@@ -149,6 +164,7 @@ class TestSearch:
                 ol = app.query_one("#variant-list", OptionList)
                 v = app.variants[app.view[ol.highlighted]]
                 assert v.id == "rs67890"
+
         run(_t())
 
     def test_search_by_coordinate(self):
@@ -164,6 +180,7 @@ class TestSearch:
                 ol = app.query_one("#variant-list", OptionList)
                 v = app.variants[app.view[ol.highlighted]]
                 assert (v.chrom, v.pos) == ("chr2", 12345)
+
         run(_t())
 
     def test_search_escape_cancels(self):
@@ -177,6 +194,7 @@ class TestSearch:
                 await pilot.press("escape")
                 await pilot.pause()
                 assert app._get_search_bar() is None
+
         run(_t())
 
 
@@ -196,6 +214,7 @@ class TestMatrixInfoCopy:
                 await pilot.press("t")
                 await pilot.pause()
                 assert app.matrix_mode is False
+
         run(_t())
 
     def test_file_info_panel(self):
@@ -211,8 +230,9 @@ class TestMatrixInfoCopy:
                 assert "VCFv4.3" in text
                 assert "chr1" in text
                 # 规格要求：INFO/FORMAT 字段定义也要展示
-                assert "Total Depth" in text      # ##INFO DP 的 Description
-                assert "Genotype" in text         # ##FORMAT GT 的 Description
+                assert "Total Depth" in text  # ##INFO DP 的 Description
+                assert "Genotype" in text  # ##FORMAT GT 的 Description
+
         run(_t())
 
     def test_copy_line_records_raw(self):
@@ -223,6 +243,7 @@ class TestMatrixInfoCopy:
                 await pilot.press("y")
                 await pilot.pause()
                 assert app._last_copied.startswith("chr1\t10234\trs12345")
+
         run(_t())
 
     def test_help_screen_opens_and_q_closes(self):
@@ -236,6 +257,7 @@ class TestMatrixInfoCopy:
                 await pilot.press("q")
                 await pilot.pause()
                 assert len(app.screen_stack) == 1  # q 只关闭帮助屏，不退出
+
         run(_t())
 
 
@@ -247,6 +269,7 @@ class TestBackgroundScan:
         """快扫 2 条立即启动，后台续扫完成后总量补齐、无丢失。"""
         meta, head, skipped, cont = scan_vcf_quick(SAMPLE_VCF, limit=2)
         assert cont >= 0
+
         async def _t():
             app = VcfBrowser(SAMPLE_VCF, initial=(meta, head, skipped, cont))
             async with app.run_test(size=(120, 30)) as pilot:
@@ -262,6 +285,7 @@ class TestBackgroundScan:
                 assert len(app.view) == 18
                 ol = app.query_one("#variant-list", OptionList)
                 assert ol.option_count == 18
+
         run(_t())
 
     def test_scan_aborts_on_exit(self, tmp_path):
@@ -272,12 +296,14 @@ class TestBackgroundScan:
         lines += [f"chr1\t{i}\t.\tA\tG\t50\tPASS\t." for i in range(1, 20_001)]
         f.write_text("\n".join(lines) + "\n")
         meta, head, skipped, cont = scan_vcf_quick(f, limit=10)
+
         async def _t():
             app = VcfBrowser(f, initial=(meta, head, skipped, cont))
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause()
             # 退出后 scanning 标志应被置 False（on_unmount）
             assert app.scanning is False
+
         run(_t())
 
 
@@ -297,7 +323,8 @@ class TestBatchAppendPositionStability:
         """窗口不在尾部时，批次追加不触碰列表：高亮/窗口/物化数均不变。"""
         f = self._make_vcf(tmp_path, 1000)
         meta, head, skipped, cont = scan_vcf_quick(f, limit=500)
-        from seqviz.vcf import scan_vcf_resume
+        from seqviz.core.vcf import scan_vcf_resume
+
         tail, _ = scan_vcf_resume(f, cont)
 
         async def _t():
@@ -318,12 +345,14 @@ class TestBatchAppendPositionStability:
                 assert ol.option_count == app.WINDOW  # 窗口不在尾部 → 不追加选项
                 assert len(app.view) == 750
                 app.scanning = False
+
         run(_t())
 
     def test_batch_append_incremental_at_tail(self, tmp_path):
         """窗口贴尾部且未填满：增量 add_options（非 clear 重建），高亮不变。"""
         meta, head, skipped, cont = scan_vcf_quick(SAMPLE_VCF, limit=2)
-        from seqviz.vcf import scan_vcf_resume
+        from seqviz.core.vcf import scan_vcf_resume
+
         tail, _ = scan_vcf_resume(SAMPLE_VCF, cont)
 
         async def _t():
@@ -340,10 +369,39 @@ class TestBatchAppendPositionStability:
                 assert ol.option_count == 18  # 全部补齐
                 assert ol.highlighted == hl_before  # 高亮未被重置
                 app.scanning = False
+
         run(_t())
 
 
 class TestScanCacheRefresh:
+    def test_unsorted_batch_can_include_new_contigs(self, tmp_path):
+        f = tmp_path / "contigs.vcf"
+        f.write_text(
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+            "chr2\t100\t.\tA\tG\t50\tPASS\t.\n"
+            "chr1\t100\t.\tA\tG\t50\tPASS\t.\n"
+            "chr3\t100\t.\tA\tG\t50\tPASS\t.\n"
+        )
+        meta, head, skipped, cont = scan_vcf_quick(f, limit=1)
+        tail, skipped_add = scan_vcf_resume(f, cont)
+
+        async def _t():
+            app = VcfBrowser(f, initial=(meta, head, skipped, -1))
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                app.scanning = True
+                app._append_batch(tail)
+                app._finish_scan(tail, skipped_add)
+                await pilot.pause()
+                assert [app.variants[i].chrom for i in app.view] == [
+                    "chr1",
+                    "chr2",
+                    "chr3",
+                ]
+                assert app._find_coord_in_view("chr3", 100, 100) == 2
+
+        run(_t())
+
     @pytest.mark.parametrize("mode", ["SNP", "QUAL"])
     def test_new_variants_remain_visible_after_filter_or_sort(self, mode):
         async def _t():
@@ -374,6 +432,7 @@ class TestScrollbarHonesty:
         lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"]
         lines += [f"chr1\t{i}\t.\tA\tG\t50\tPASS\t." for i in range(1, 1001)]
         f.write_text("\n".join(lines) + "\n")
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -381,10 +440,12 @@ class TestScrollbarHonesty:
                 ol = app.query_one("#variant-list", OptionList)
                 assert len(app.view) == 1000 > app.WINDOW
                 assert ol.show_scrollbar is False
+
         run(_t())
 
     def test_small_list_shows_scrollbar(self):
         """小列表全量物化，滚动条正常显示。"""
+
         async def _t():
             app = VcfBrowser(SAMPLE_VCF)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -392,6 +453,7 @@ class TestScrollbarHonesty:
                 ol = app.query_one("#variant-list", OptionList)
                 assert len(app.view) == 18 <= app.WINDOW
                 assert ol.show_scrollbar is True
+
         run(_t())
 
     def test_filter_to_small_restores_scrollbar(self, tmp_path):
@@ -401,6 +463,7 @@ class TestScrollbarHonesty:
         lines += [f"chr1\t{i}\t.\tA\tG\t50\tPASS\t." for i in range(1, 501)]
         lines += [f"chr1\t{i}\t.\tA\tG\t50\tLowQual\t." for i in range(1001, 1401)]
         f.write_text("\n".join(lines) + "\n")
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -414,6 +477,7 @@ class TestScrollbarHonesty:
                 await pilot.press("f")  # InDel → 0 条 ≤ WINDOW
                 await pilot.pause()
                 assert ol.show_scrollbar is True
+
         run(_t())
 
 
@@ -424,6 +488,7 @@ class TestEndAfterScan:
     def test_G_reaches_true_last_variant(self):
         """后台扫描完成后，G 应定位到最后一条变异（非 400 条缓冲尾部）。"""
         meta, head, skipped, cont = scan_vcf_quick(SAMPLE_VCF, limit=2)
+
         async def _t():
             app = VcfBrowser(SAMPLE_VCF, initial=(meta, head, skipped, cont))
             async with app.run_test(size=(120, 30)) as pilot:
@@ -439,10 +504,12 @@ class TestEndAfterScan:
                 v = app.variants[app.view[app._abs_index()]]
                 assert (v.chrom, v.pos) == ("chr3", 33333)  # 真实末尾
                 assert "33,333" in app._detail_text()
+
         run(_t())
 
     def test_position_indicator_updates(self):
         """位置指示器（副标题）随导航更新。"""
+
         async def _t():
             app = VcfBrowser(SAMPLE_VCF)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -454,6 +521,7 @@ class TestEndAfterScan:
                 await pilot.press("G")
                 await pilot.pause()
                 assert app.sub_title == "18 / 18"
+
         run(_t())
 
     def test_wheel_moves_position_on_large_list(self, tmp_path):
@@ -462,6 +530,7 @@ class TestEndAfterScan:
         lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"]
         lines += [f"chr1\t{i}\t.\tA\tG\t50\tPASS\t." for i in range(1, 1001)]
         f.write_text("\n".join(lines) + "\n")
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -474,6 +543,7 @@ class TestEndAfterScan:
                 ol.scroll_up()
                 await pilot.pause()
                 assert app._abs_index() == 0
+
         run(_t())
 
 
@@ -503,6 +573,7 @@ class TestCoordJump:
 
     def test_exact_coord_jump(self):
         """精确坐标：chr1:15892 命中 rs67890。"""
+
         async def _t():
             app = VcfBrowser(SAMPLE_VCF)
             msgs = self._capture_notify(app)
@@ -512,10 +583,12 @@ class TestCoordJump:
                 v = app.variants[app.view[app._abs_index()]]
                 assert (v.chrom, v.pos, v.id) == ("chr1", 15892, "rs67890")
                 assert "跳转到 chr1:15,892" in msgs[-1]
+
         run(_t())
 
     def test_nearest_coord_jump(self):
         """最近邻：chr1:10300 → 10234（跞66）而非 10567（跞267）。"""
+
         async def _t():
             app = VcfBrowser(SAMPLE_VCF)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -527,10 +600,12 @@ class TestCoordJump:
                 await self._search(pilot, "chr1:10500")
                 v = app.variants[app.view[app._abs_index()]]
                 assert v.pos == 10567
+
         run(_t())
 
     def test_range_jump_first_in_range(self, tmp_path):
         """范围跳转：命中区间内第一个变异（两种分隔符）。"""
+
         async def _t():
             app = VcfBrowser(SAMPLE_VCF)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -541,10 +616,12 @@ class TestCoordJump:
                 await self._search(pilot, "chr2:20000..50000")
                 v = app.variants[app.view[app._abs_index()]]
                 assert (v.chrom, v.pos) == ("chr2", 23456)
+
         run(_t())
 
     def test_range_no_match_warns(self):
         """范围内无变异：提示该范围内无变异。"""
+
         async def _t():
             app = VcfBrowser(SAMPLE_VCF)
             msgs = self._capture_notify(app)
@@ -552,10 +629,12 @@ class TestCoordJump:
                 await pilot.pause()
                 await self._search(pilot, "chr1:50000000-60000000")
                 assert "该范围内无变异" in msgs[-1]
+
         run(_t())
 
     def test_chrom_without_variants_warns(self):
         """不存在的染色体单坐标：提示未找到。"""
+
         async def _t():
             app = VcfBrowser(SAMPLE_VCF)
             msgs = self._capture_notify(app)
@@ -563,10 +642,12 @@ class TestCoordJump:
                 await pilot.pause()
                 await self._search(pilot, "chrX:100")
                 assert "未找到" in msgs[-1]
+
         run(_t())
 
     def test_invalid_format_falls_back_to_id_search(self):
         """格式错误（chr1:abc）回退 ID 搜索 → 未找到匹配。"""
+
         async def _t():
             app = VcfBrowser(SAMPLE_VCF)
             msgs = self._capture_notify(app)
@@ -574,6 +655,7 @@ class TestCoordJump:
                 await pilot.pause()
                 await self._search(pilot, "chr1:abc")
                 assert "未找到匹配" in msgs[-1]
+
         run(_t())
 
     def test_coord_jump_shifts_window_on_large_list(self, tmp_path):
@@ -582,22 +664,27 @@ class TestCoordJump:
         lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"]
         lines += [f"chr1\t{i}\t.\tA\tG\t50\tPASS\t." for i in range(1, 1001)]
         f.write_text("\n".join(lines) + "\n")
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause()
                 await self._search(pilot, "chr1:800")
                 assert app._abs_index() == 799  # pos=800 是第 800 条
-                assert app._win_start > 0       # 窗口已平移
+                assert app._win_start > 0  # 窗口已平移
                 assert "800" in app._detail_text()
+
         run(_t())
 
     def test_scanning_suffix_in_message(self, tmp_path):
         """扫描中搜索：提示含（当前已索引 N 条）。"""
         f = tmp_path / "s.vcf"
-        lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO",
-                 "chr1\t100\t.\tA\tG\t50\tPASS\t."]
+        lines = [
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO",
+            "chr1\t100\t.\tA\tG\t50\tPASS\t.",
+        ]
         f.write_text("\n".join(lines) + "\n")
+
         async def _t():
             app = VcfBrowser(f)
             msgs = self._capture_notify(app)
@@ -608,6 +695,7 @@ class TestCoordJump:
                 assert "该范围内无变异" in msgs[-1]
                 assert "当前已索引" in msgs[-1]
                 app.scanning = False
+
         run(_t())
 
 
@@ -615,12 +703,33 @@ class TestCoordJump:
 # 真实比例滚动条（遗留建议：映射全量 view）
 # ──────────────────────────────────────────────
 class TestAbsoluteScrollbar:
+    def test_mouse_release_restores_other_widgets(self, tmp_path):
+        f = tmp_path / "mouse.vcf"
+        f.write_text(
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+            + "".join(f"chr1\t{i}\t.\tA\tG\t50\tPASS\t.\n" for i in range(1, 1001))
+        )
+
+        async def _t():
+            app = VcfBrowser(f)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause()
+                scrollbar = app.query_one("#abs-scrollbar", AbsoluteScrollbar)
+                await pilot.mouse_down(scrollbar, offset=(0, 5))
+                assert app.mouse_captured is scrollbar
+                await pilot.mouse_up(scrollbar, offset=(0, 5))
+                await pilot.pause()
+                assert app.mouse_captured is None
+
+        run(_t())
+
     def test_visibility_follows_list_size(self, tmp_path):
         """大列表显示真实比例滚动条，小列表隐藏。"""
         f = tmp_path / "b.vcf"
         lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"]
         lines += [f"chr1\t{i}\t.\tA\tG\t50\tPASS\t." for i in range(1, 1001)]
         f.write_text("\n".join(lines) + "\n")
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -635,6 +744,7 @@ class TestAbsoluteScrollbar:
                 await pilot.pause()
                 sb2 = app2.query_one("#abs-scrollbar", AbsoluteScrollbar)
                 assert str(sb2.styles.display) == "none"  # 18 ≤ WINDOW
+
         run(_t())
 
     def test_jump_to_maps_full_view(self, tmp_path):
@@ -643,6 +753,7 @@ class TestAbsoluteScrollbar:
         lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"]
         lines += [f"chr1\t{i * 100}\t.\tA\tG\t50\tPASS\t." for i in range(1, 5001)]
         f.write_text("\n".join(lines) + "\n")
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -654,6 +765,7 @@ class TestAbsoluteScrollbar:
                 sb._jump_to(0)  # 顶部
                 await pilot.pause()
                 assert app._abs_index() == 0
+
         run(_t())
 
     def test_thumb_position_tracks_navigation(self, tmp_path):
@@ -662,6 +774,7 @@ class TestAbsoluteScrollbar:
         lines = ["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"]
         lines += [f"chr1\t{i}\t.\tA\tG\t50\tPASS\t." for i in range(1, 2001)]
         f.write_text("\n".join(lines) + "\n")
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -673,6 +786,7 @@ class TestAbsoluteScrollbar:
                 sb.refresh()
                 bottom_render = str(sb.render())
                 assert top_render != bottom_render  # 滑块已移动
+
         run(_t())
 
 
@@ -692,6 +806,7 @@ class TestWindowedVirtualization:
     def test_window_caps_materialized_options(self, tmp_path):
         """列表只物化 WINDOW 条，而非全量。"""
         f = self._make_big_vcf(tmp_path)
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -699,11 +814,13 @@ class TestWindowedVirtualization:
                 ol = app.query_one("#variant-list", OptionList)
                 assert len(app.view) == 5000
                 assert ol.option_count == app.WINDOW  # 只物化窗口
+
         run(_t())
 
     def test_G_jumps_to_last_across_windows(self, tmp_path):
         """G 键跨窗口跳到最后一条，绝对下标正确。"""
         f = self._make_big_vcf(tmp_path)
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -715,11 +832,13 @@ class TestWindowedVirtualization:
                 await pilot.press("g")
                 await pilot.pause()
                 assert app._abs_index() == 0
+
         run(_t())
 
     def test_filter_rebuild_is_windowed(self, tmp_path):
         """过滤切换后列表仍只物化窗口大小（不再全量重建）。"""
         f = self._make_big_vcf(tmp_path)
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -729,6 +848,7 @@ class TestWindowedVirtualization:
                 ol = app.query_one("#variant-list", OptionList)
                 assert len(app.view) == 5000
                 assert ol.option_count == app.WINDOW
+
         run(_t())
 
 
@@ -744,12 +864,14 @@ class TestChromNaturalSort:
             "chr2\t50\t.\tA\tG\t50\tPASS\t.\n"
             "chr1\t999\t.\tA\tG\t50\tPASS\t.\n"
         )
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause()
                 order = [app.variants[i].chrom for i in app.view]
                 assert order == ["chr1", "chr2", "chr10"]  # 非字典序的 chr1,chr10,chr2
+
         run(_t())
 
     def test_coord_search_distinguishes_numeric_name_spellings(self, tmp_path):
@@ -769,20 +891,42 @@ class TestAllelicDepthBar:
     def test_zero_alt_depth_has_no_alt_bar(self):
         app = VcfBrowser(SAMPLE_VCF)
         variant = Variant(
-            "chr1", 100, "", "A", "G", 50, "PASS",
-            format_fields=["GT", "AD"], samples={"sample1": "0/0:20,0"},
+            "chr1",
+            100,
+            "",
+            "A",
+            "G",
+            50,
+            "PASS",
+            format_fields=["GT", "AD"],
+            samples={"sample1": "0/0:20,0"},
         )
-        alt_line = next(line for line in str(app._build_detail(variant)).splitlines() if "ALT " in line)
+        alt_line = next(
+            line
+            for line in str(app._build_detail(variant)).splitlines()
+            if "ALT " in line
+        )
         assert "0" in alt_line
         assert "▓" not in alt_line
 
     def test_nonzero_minor_alt_depth_remains_visible(self):
         app = VcfBrowser(SAMPLE_VCF)
         variant = Variant(
-            "chr1", 100, "", "A", "G", 50, "PASS",
-            format_fields=["GT", "AD"], samples={"sample1": "0/1:99,1"},
+            "chr1",
+            100,
+            "",
+            "A",
+            "G",
+            50,
+            "PASS",
+            format_fields=["GT", "AD"],
+            samples={"sample1": "0/1:99,1"},
         )
-        alt_line = next(line for line in str(app._build_detail(variant)).splitlines() if "ALT " in line)
+        alt_line = next(
+            line
+            for line in str(app._build_detail(variant)).splitlines()
+            if "ALT " in line
+        )
         assert "▓" in alt_line
 
 
@@ -792,7 +936,7 @@ class TestUnsetFilterDisplay:
         variant = Variant("chr1", 100, "", "A", "G", 50, ".")
         detail = app._build_detail(variant)
         assert any(
-            span.style == "dim" and detail.plain[span.start:span.end].strip() == "."
+            span.style == "dim" and detail.plain[span.start : span.end].strip() == "."
             for span in detail.spans
         )
 
@@ -822,7 +966,7 @@ class TestPhasedGenotypeDisplay:
         assert "0|1 杂合" in str(app._build_detail(variant))
         matrix = app._build_matrix()
         assert any(
-            span.style == "yellow" and "0|1" in matrix.plain[span.start:span.end]
+            span.style == "yellow" and "0|1" in matrix.plain[span.start : span.end]
             for span in matrix.spans
         )
 
@@ -839,9 +983,12 @@ class TestDetailPanelScroll:
             "##fileformat=VCFv4.3",
             '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
             '##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">',
-            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + "\t".join(names),
-            "chr1\t1000\t.\tA\tG\t50\tPASS\t.\tGT:AD\t" + "\t".join(["0/1:10,5"] * samples),
-            "chr1\t2000\t.\tC\tT\t50\tPASS\t.\tGT:AD\t" + "\t".join(["1/1:0,20"] * samples),
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t"
+            + "\t".join(names),
+            "chr1\t1000\t.\tA\tG\t50\tPASS\t.\tGT:AD\t"
+            + "\t".join(["0/1:10,5"] * samples),
+            "chr1\t2000\t.\tC\tT\t50\tPASS\t.\tGT:AD\t"
+            + "\t".join(["1/1:0,20"] * samples),
         ]
         f = tmp_path / "wide.vcf"
         f.write_text("\n".join(lines) + "\n")
@@ -854,6 +1001,7 @@ class TestDetailPanelScroll:
     def test_tab_focuses_detail_and_jk_scrolls(self, tmp_path):
         """Tab 聚焦右侧后，j/k 滚动详情而非移动列表。"""
         f = self._make_wide_vcf(tmp_path)
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -874,11 +1022,13 @@ class TestDetailPanelScroll:
                 await pilot.pause()
                 assert detail.scroll_offset.y < after_j
                 assert ol.highlighted == 0  # 列表未受影响
+
         run(_t())
 
     def test_arrow_and_page_keys_scroll_detail(self, tmp_path):
         """方向键 / PageUp / PageDown 均可滚动聚焦的详情（Space/b 翻页已移除）。"""
         f = self._make_wide_vcf(tmp_path)
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -899,11 +1049,13 @@ class TestDetailPanelScroll:
                 await pilot.press("g")
                 await pilot.pause()
                 assert detail.scroll_offset.y == 0
+
         run(_t())
 
     def test_gG_scroll_focused_detail_top_bottom(self, tmp_path):
         """详情聚焦时 g/G 滚动到顶/到底（而非跳转列表）。"""
         f = self._make_wide_vcf(tmp_path)
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -919,11 +1071,13 @@ class TestDetailPanelScroll:
                 await pilot.press("g")
                 await pilot.pause()
                 assert detail.scroll_offset.y == 0
+
         run(_t())
 
     def test_escape_returns_focus_to_list(self, tmp_path):
         """Esc 返回变异列表，此后 j/k 恢复列表导航语义。"""
         f = self._make_wide_vcf(tmp_path)
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -940,11 +1094,13 @@ class TestDetailPanelScroll:
                 await pilot.pause()
                 assert ol.highlighted == 1  # 恢复列表导航
                 assert detail.scroll_offset.y == 0
+
         run(_t())
 
     def test_navigating_variants_resets_detail_scroll(self, tmp_path):
         """详情滚动后切换变异，详情自动回到顶部。"""
         f = self._make_wide_vcf(tmp_path)
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -956,11 +1112,13 @@ class TestDetailPanelScroll:
                 await pilot.press("escape", "j")  # 回列表并下一条
                 await pilot.pause()
                 assert detail.scroll_offset.y == 0
+
         run(_t())
 
     def test_matrix_view_scrollable(self, tmp_path):
         """基因型矩阵视图（多样本超宽）同样可滚动。"""
         f = self._make_wide_vcf(tmp_path)
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 15)) as pilot:
@@ -977,11 +1135,13 @@ class TestDetailPanelScroll:
                 await pilot.press("g")
                 await pilot.pause()
                 assert detail.scroll_offset.y == 0
+
         run(_t())
 
     def test_list_navigation_unchanged_without_focus(self, tmp_path):
         """列表聚焦时 j/k/g/G 仍为列表导航，详情不滚动；Space/b 已无绑定不产生任何行为。"""
         f = self._make_wide_vcf(tmp_path)
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -995,11 +1155,13 @@ class TestDetailPanelScroll:
                 await pilot.press("G")
                 await pilot.pause()
                 assert ol.highlighted == ol.option_count - 1  # G 跳列表末尾
+
         run(_t())
 
     def test_np_always_navigates_variants_even_when_detail_focused(self, tmp_path):
         """n/p 始终为变异级导航：详情聚焦时仍移动列表而非滚动详情。"""
         f = self._make_wide_vcf(tmp_path)
+
         async def _t():
             app = VcfBrowser(f)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -1016,4 +1178,5 @@ class TestDetailPanelScroll:
                 await pilot.press("p")
                 await pilot.pause()
                 assert ol.highlighted == 0
+
         run(_t())

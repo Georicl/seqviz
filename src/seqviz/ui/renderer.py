@@ -1,23 +1,20 @@
+"""将序列、质量值和位置标尺构造成 Rich 文本。"""
+
 from rich.text import Text
 
 from seqviz import config
-from seqviz.seq_type import SeqType, detect_seq_type
-
-# DNA 碱基配色方案的导入期快照（仅供外部直接引用/测试）；渲染路径经
-# _get_dna_colors() 在消费时读取配置，以尊重 reload_config 的刷新契约。
-DNA_COLORS = dict(config.get("colors.dna", {}))
+from seqviz.core.seq_type import SeqType, detect_seq_type
 
 
 def _get_dna_colors() -> dict:
-    """消费时读取 DNA 配色（尊重配置刷新；类型异常时回退空 dict）。"""
-    colors = config.get("colors.dna", {})
-    return colors if isinstance(colors, dict) else {}
+    """在渲染时读取当前配色，配置重载后立即生效。"""
+    return config.get("colors.dna")
 
 
 def _get_quality_thresholds() -> dict:
-    """消费时读取质量值着色阈值（尊重配置刷新；类型异常时回退空 dict）。"""
-    thresholds = config.get("colors.quality_thresholds", {})
-    return thresholds if isinstance(thresholds, dict) else {}
+    """读取已由配置层校验的质量阈值。"""
+    return config.get("colors.quality_thresholds")
+
 
 PROTEIN_COLORS: dict[str, str] = {}
 
@@ -41,6 +38,7 @@ for _aa in "DE":
 for _aa in "GPC":
     PROTEIN_COLORS[_aa] = "dim"
 
+
 def colorize_sequence(seq: str, seq_type: SeqType | None = None) -> Text:
     if seq_type is None:
         seq_type = detect_seq_type(seq=seq)
@@ -62,6 +60,7 @@ def colorize_sequence(seq: str, seq_type: SeqType | None = None) -> Text:
     text.append(seq[start:], style=prev_color)
     return text
 
+
 def colorize_quality(quality: str) -> Text:
     """
     对 FASTQ 质量值进行 Phred 梯度着色（阈值可配置）。
@@ -72,9 +71,8 @@ def colorize_quality(quality: str) -> Text:
     Q >= low    → bright_red (低)
     Q <  low    → red (极低)
     """
-    high = _get_quality_thresholds().get("high", 30)
-    medium = _get_quality_thresholds().get("medium", 20)
-    low = _get_quality_thresholds().get("low", 10)
+    thresholds = _get_quality_thresholds()
+    high, medium, low = thresholds["high"], thresholds["medium"], thresholds["low"]
 
     def _style(score: int) -> str:
         if score >= high:
@@ -101,23 +99,6 @@ def colorize_quality(quality: str) -> Text:
     return text
 
 
-def quality_stats(quality: str) -> dict:
-    """
-    计算一条 read 的质量统计信息。
-    返回 {"min": int, "max": int, "mean": float, "q30_pct": float}
-    """
-    scores = [ord(c) - 33 for c in quality]
-    if not scores:
-        return {"min": 0, "max": 0, "mean": 0.0, "q30_pct": 0.0}
-    q30_count = sum(1 for s in scores if s >= 30)
-    return {
-        "min": min(scores),
-        "max": max(scores),
-        "mean": sum(scores) / len(scores),
-        "q30_pct": q30_count / len(scores),
-    }
-
-
 def quality_bar(quality: str, width: int = 40) -> Text:
     """
     将质量值压缩为一条可视化质量分布条。
@@ -127,17 +108,15 @@ def quality_bar(quality: str, width: int = 40) -> Text:
     if not scores:
         return Text()
 
-    high = _get_quality_thresholds().get("high", 30)
-    medium = _get_quality_thresholds().get("medium", 20)
-    low = _get_quality_thresholds().get("low", 10)
+    thresholds = _get_quality_thresholds()
+    high, medium, low = thresholds["high"], thresholds["medium"], thresholds["low"]
 
-    # 向上取整分桶：保证输出条数不超过 width（len 落在 (width, 2*width) 时
-    # 旧的 len // width 会退化为 bin_size=1，导致条数超过指定宽度）
+    # 向上取整分桶，使输出桶数不超过 width。
     width = max(1, width)
     bin_size = max(1, (len(scores) + width - 1) // width)
     text = Text()
     for i in range(0, len(scores), bin_size):
-        chunk = scores[i:i + bin_size]
+        chunk = scores[i : i + bin_size]
         avg = sum(chunk) / len(chunk)
         if avg >= high:
             text.append("█", style="green")
@@ -158,7 +137,7 @@ def position_ruler(start: int, length: int) -> Text:
     length: 当前 chunk 的碱基数
     """
     # 先构建纯字符串，再统一着色
-    chars = [' '] * length
+    chars = [" "] * length
     for i in range(length):
         pos = start + i  # 1-based
         if (pos - 1) % 10 == 0:
@@ -166,7 +145,7 @@ def position_ruler(start: int, length: int) -> Text:
             for j, ch in enumerate(num_str):
                 if i + j < length:
                     chars[i + j] = ch
-    
+
     text = Text()
     for ch in chars:
         if ch.isdigit():

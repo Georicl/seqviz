@@ -7,16 +7,18 @@ import copy
 import json
 from pathlib import Path
 
+from seqviz.core.formats import DEFAULT_EXTENSIONS
+
 # 内置默认配置
 DEFAULT_CONFIG: dict = {
-    "theme": "dark",               # 内置主题名: light/dark/nord/gruvbox/catppuccin/solarized/rose-pine/tokyo-night
+    "theme": "dark",  # 内置主题名: light/dark/nord/gruvbox/catppuccin/solarized/rose-pine/tokyo-night
     "browser": {
-        "wrap_width": 60,           # 每行碱基数（auto_wrap 关闭时生效）
-        "auto_wrap": True,          # 根据窗口宽度自动换行
-        "scroll_step": 5,           # j/k 每次滚动行数
-        "sidebar_width": 32,        # 侧栏宽度
+        "wrap_width": 60,  # 每行碱基数（auto_wrap 关闭时生效）
+        "auto_wrap": True,  # 根据窗口宽度自动换行
+        "scroll_step": 5,  # j/k 每次滚动行数
+        "sidebar_width": 32,  # 侧栏宽度
         "show_line_numbers": True,  # 显示位置编号
-        "show_quality": True,       # FASTQ 显示质量值行
+        "show_quality": True,  # FASTQ 显示质量值行
     },
     "colors": {
         "dna": {
@@ -27,17 +29,13 @@ DEFAULT_CONFIG: dict = {
             "N": "dim",
         },
         "quality_thresholds": {
-            "high": 30,     # Q >= high  -> 绿色
-            "medium": 20,   # Q >= medium -> 黄色
-            "low": 10,      # Q >= low   -> 亮红, 否则红色
+            "high": 30,  # Q >= high  -> 绿色
+            "medium": 20,  # Q >= medium -> 黄色
+            "low": 10,  # Q >= low   -> 亮红, 否则红色
         },
     },
     "file_browser": {
-        "extensions": [
-            ".fa", ".fasta", ".fna", ".faa", ".aa", ".seq",
-            ".fq", ".fastq",
-            ".vcf",
-        ],
+        "extensions": list(DEFAULT_EXTENSIONS),
     },
 }
 
@@ -57,11 +55,7 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def _coerce_types(default, value):
-    """递归类型校验：value 与 default 类型不符时回退 default（dict 逐键校验）。
-
-    防止用户配置写错类型（如 "dna": "red"）导致消费方（如 dict(...) ）在
-    导入期崩溃；用户新增的未知键原样保留。
-    """
+    """按默认配置递归校验类型；类型错误使用默认值，额外键原样保留。"""
     if isinstance(default, dict):
         if not isinstance(value, dict):
             return _coerce_types(default, {})  # 整体类型不符 → 全部回退
@@ -108,7 +102,7 @@ def load_config() -> dict:
             if isinstance(user_config, dict):
                 merged = _deep_merge(DEFAULT_CONFIG, user_config)
                 config = _coerce_types(DEFAULT_CONFIG, merged)
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError, OSError:
             pass  # 配置损坏时静默使用默认值
     return config
 
@@ -130,7 +124,8 @@ def reload_config() -> dict:
     global _config
     _config = None
     cfg = get_config()
-    from seqviz import theme as theme_mod  # 延迟导入避免循环依赖
+    from seqviz.ui import theme as theme_mod  # 仅重载时刷新依赖配置的主题缓存
+
     theme_mod.reset_theme()
     return cfg
 

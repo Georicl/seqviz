@@ -3,7 +3,7 @@
 import json
 
 from seqviz import config as config_mod
-from seqviz import theme as theme_mod
+from seqviz.ui import theme as theme_mod
 
 
 # ──────────────────────────────────────────────
@@ -95,28 +95,36 @@ class TestConfig:
     def test_load_config_wrong_type_falls_back(self, tmp_path, monkeypatch):
         """用户配置类型错误时应回退默认值而非令消费方崩溃。"""
         cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({
-            "colors": {"dna": "red"},          # 应为 dict，误写为 str
-            "browser": {"wrap_width": "wide"},  # 应为 int，误写为 str
-        }))
+        cfg_file.write_text(
+            json.dumps(
+                {
+                    "colors": {"dna": "red"},  # 应为 dict，误写为 str
+                    "browser": {"wrap_width": "wide"},  # 应为 int，误写为 str
+                }
+            )
+        )
         monkeypatch.setattr(config_mod, "CONFIG_FILE", cfg_file)
         config_mod._config = None
         cfg = config_mod.get_config()
         assert cfg["colors"]["dna"]["A"] == "green"  # dna 回退默认 dict
-        assert cfg["browser"]["wrap_width"] == 60      # wrap_width 回退默认 int
+        assert cfg["browser"]["wrap_width"] == 60  # wrap_width 回退默认 int
 
     def test_load_config_lenient_conversions(self, tmp_path, monkeypatch):
         """0/1 作 bool、整数值 float 应被安全转换而非静默回退/反转。"""
         cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({
-            "browser": {"auto_wrap": 0, "wrap_width": 80.0},
-            "colors": {"quality_thresholds": {"high": 25.0}},
-        }))
+        cfg_file.write_text(
+            json.dumps(
+                {
+                    "browser": {"auto_wrap": 0, "wrap_width": 80.0},
+                    "colors": {"quality_thresholds": {"high": 25.0}},
+                }
+            )
+        )
         monkeypatch.setattr(config_mod, "CONFIG_FILE", cfg_file)
         config_mod._config = None
         cfg = config_mod.get_config()
         assert cfg["browser"]["auto_wrap"] is False  # 0 → False，不反转
-        assert cfg["browser"]["wrap_width"] == 80    # 80.0 → 80，不丢弃
+        assert cfg["browser"]["wrap_width"] == 80  # 80.0 → 80，不丢弃
         assert cfg["colors"]["quality_thresholds"]["high"] == 25
 
 
@@ -126,8 +134,9 @@ class TestConfig:
 class TestConfigAffectsBehavior:
     def test_dna_color_override_affects_colorize(self, tmp_path, monkeypatch):
         """修改 config 的 dna 颜色后，colorize 应使用新颜色（消费时读取配置）。"""
-        from seqviz.renderer import colorize_sequence
-        from seqviz.seq_type import SeqType
+        from seqviz.core.seq_type import SeqType
+        from seqviz.ui.renderer import colorize_sequence
+
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({"colors": {"dna": {"A": "cyan"}}}))
         monkeypatch.setattr(config_mod, "CONFIG_FILE", cfg_file)
@@ -139,7 +148,9 @@ class TestConfigAffectsBehavior:
 
     def test_quality_threshold_override(self, tmp_path, monkeypatch):
         cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"colors": {"quality_thresholds": {"high": 35}}}))
+        cfg_file.write_text(
+            json.dumps({"colors": {"quality_thresholds": {"high": 35}}})
+        )
         monkeypatch.setattr(config_mod, "CONFIG_FILE", cfg_file)
         config_mod._config = None
         assert config_mod.get("colors.quality_thresholds.high") == 35
@@ -165,14 +176,6 @@ class TestTheme:
         theme = theme_mod.get_theme()
         assert theme["border"] == "#45475a"
         assert theme["accent"] == "#89b4fa"
-
-    def test_deep_merge(self):
-        merged = theme_mod._deep_merge(
-            {"background": "#ffffff", "foreground": "#1a1a1a"},
-            {"background": "#000000"},
-        )
-        assert merged["background"] == "#000000"
-        assert merged["foreground"] == "#1a1a1a"
 
     def test_load_theme_from_file(self, tmp_path, monkeypatch):
         theme_file = tmp_path / "theme.json"
@@ -202,7 +205,7 @@ class TestTheme:
         assert ".main-view" in css
 
     def test_build_browser_css_custom_theme(self):
-        theme = dict(theme_mod.DEFAULT_THEME)
+        theme = dict(theme_mod.BUILTIN_THEMES[theme_mod.DEFAULT_THEME_NAME])
         theme["background"] = "#123456"
         css = theme_mod.build_browser_css(theme)
         assert "#123456" in css
@@ -216,16 +219,19 @@ class TestTheme:
 
     def test_browser_uses_dark_theme(self):
         """FastaBrowser 应使用深色主题 (DARK=True)。"""
-        from seqviz.browser import FastaBrowser
+        from seqviz.ui.sequence.app import FastaBrowser
+
         assert FastaBrowser.DARK is True
 
     def test_file_browser_uses_dark_theme(self):
-        from seqviz.file_browser import FileBrowser
+        from seqviz.ui.files import FileBrowser
+
         assert FileBrowser.DARK is True
 
     def test_app_title_is_seqviz(self):
-        from seqviz.browser import FastaBrowser
-        from seqviz.file_browser import FileBrowser
+        from seqviz.ui.files import FileBrowser
+        from seqviz.ui.sequence.app import FastaBrowser
+
         assert FastaBrowser.TITLE == "Seqviz"
         assert FileBrowser.TITLE == "Seqviz"
 
@@ -235,20 +241,24 @@ class TestThemeTypeSafety:
         """theme.json 颜色字段为非字符串（null/数字/数组）时应被过滤，
         回退内置值，避免生成非法 CSS 导致应用无法启动。"""
         theme_file = tmp_path / "theme.json"
-        theme_file.write_text(json.dumps({
-            "background": 123,
-            "foreground": None,
-            "accent": ["#ffffff"],
-            "border": "#ff0000",  # 合法字符串覆盖应保留
-        }))
+        theme_file.write_text(
+            json.dumps(
+                {
+                    "background": 123,
+                    "foreground": None,
+                    "accent": ["#ffffff"],
+                    "border": "#ff0000",  # 合法字符串覆盖应保留
+                }
+            )
+        )
         monkeypatch.setattr(theme_mod, "THEME_FILE", theme_file)
         theme_mod._theme = None
         theme = theme_mod.load_theme()
         base = theme_mod.BUILTIN_THEMES[theme_mod.DEFAULT_THEME_NAME]
         assert theme["background"] == base["background"]  # 123 被过滤
         assert theme["foreground"] == base["foreground"]  # null 被过滤
-        assert theme["accent"] == base["accent"]          # 数组被过滤
-        assert theme["border"] == "#ff0000"               # 合法覆盖保留
+        assert theme["accent"] == base["accent"]  # 数组被过滤
+        assert theme["border"] == "#ff0000"  # 合法覆盖保留
         # CSS 可正常生成（不抛 StylesheetParseError）
         assert "#ff0000" in theme_mod.build_browser_css(theme)
 
@@ -256,7 +266,9 @@ class TestThemeTypeSafety:
 class TestConfigCopyContract:
     def test_load_config_returns_independent_copy(self, monkeypatch):
         """无用户配置时返回值应为独立副本，原地修改不污染全局默认值。"""
-        monkeypatch.setattr(config_mod, "CONFIG_FILE", config_mod.CONFIG_DIR / "__no_such__.json")
+        monkeypatch.setattr(
+            config_mod, "CONFIG_FILE", config_mod.CONFIG_DIR / "__no_such__.json"
+        )
         config_mod._config = None
         cfg = config_mod.get_config()
         original = config_mod.DEFAULT_CONFIG["browser"]["wrap_width"]

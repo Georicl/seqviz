@@ -14,6 +14,7 @@ def copy_to_clipboard(text: str, osc52_fallback: Callable[[str], None]) -> bool:
     策略：系统工具优先（反馈可靠），失败后回退 OSC 52（需终端支持，SSH 下同样有效）。
     """
     import platform
+
     system = platform.system()
     data = text.encode()
     try:
@@ -30,12 +31,12 @@ def copy_to_clipboard(text: str, osc52_fallback: Callable[[str], None]) -> bool:
                 try:
                     subprocess.run(cmd, input=data, check=True)
                     return True
-                except (OSError, subprocess.CalledProcessError):
+                except OSError, subprocess.CalledProcessError:
                     continue
         else:  # Windows
             subprocess.run(["clip"], input=data, check=True)
             return True
-    except (OSError, subprocess.CalledProcessError):
+    except OSError, subprocess.CalledProcessError:
         pass  # 工具缺失或异常退出（非 OSError），回退 OSC 52
     try:
         osc52_fallback(text)
